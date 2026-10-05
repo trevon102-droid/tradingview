@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ET = "America/New_York"
+from .sessions import CME_OPEN, ET_NAME as ET, anchor_shift, cme_session_index, wall_shifted
 
 
 @dataclass(frozen=True)
@@ -86,8 +86,8 @@ def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     hours = int(pd.Timedelta(rule) / pd.Timedelta(hours=1))
     if hours < 1 or 24 % hours:
         raise ValueError("rule must divide 24h evenly, e.g. '2h', '4h', '6h'")
-    wall = df.index.tz_convert(ET).tz_localize(None) + pd.Timedelta(hours=6)  # 18:00 ET -> 00:00
-    start = wall.floor("D") + pd.to_timedelta((wall.hour // hours) * hours, unit="h") - pd.Timedelta(hours=6)
+    wall = wall_shifted(df.index, CME_OPEN)  # 18:00 ET -> 00:00
+    start = wall.floor("D") + pd.to_timedelta((wall.hour // hours) * hours, unit="h") - anchor_shift(CME_OPEN)
     out = df.groupby(start).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
     # 02:00 ET doesn't exist on spring-forward day, so shift those labels forward
     out.index = out.index.tz_localize(ET, ambiguous=False, nonexistent="shift_forward").tz_convert("UTC")
@@ -128,9 +128,8 @@ _DEMO_PRICE = {"ES": 5800, "MES": 5800, "NQ": 20500, "MNQ": 20500, "YM": 42500, 
 
 def _daily(df: pd.DataFrame) -> pd.DataFrame:
     """1h -> trading-day bars stamped at the trading date (17:00 ET roll)."""
-    et = df.tz_convert(ET)
-    key = (et.index + pd.Timedelta(hours=7)).normalize().tz_localize(None)
-    out = et.groupby(key).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+    key = cme_session_index(df.index)
+    out = df.groupby(key).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
     out.index = out.index.tz_localize("UTC")
     return out
 

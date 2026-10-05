@@ -12,8 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .data import ET
-
-SESSION_SHIFT = pd.Timedelta(hours=7)  # 17:00 ET roll -> midnight, works for CME futures + spot FX
+from .sessions import cme_session_index
 
 
 def is_daily(df: pd.DataFrame) -> bool:
@@ -22,9 +21,9 @@ def is_daily(df: pd.DataFrame) -> bool:
 
 def trading_day(df: pd.DataFrame) -> pd.Series:
     """Trading date each bar belongs to (Sunday 18:00 ET bar -> Monday)."""
-    et = df.index.tz_convert(ET)
-    days = et.tz_localize(None).normalize() if is_daily(df) else (et + SESSION_SHIFT).tz_localize(None).normalize()
-    return pd.Series(days, index=df.index)
+    if is_daily(df):
+        return pd.Series(df.index.tz_convert(ET).tz_localize(None).normalize(), index=df.index)
+    return pd.Series(cme_session_index(df.index), index=df.index)
 
 
 def ema(s: pd.Series, n: int) -> pd.Series:

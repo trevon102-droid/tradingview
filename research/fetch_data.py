@@ -24,7 +24,7 @@ OUT = Path("data/market/yahoo")
 def _norm(raw: pd.DataFrame) -> pd.DataFrame:
     raw = raw.rename(columns=str.lower)
     idx = raw.index.tz_localize("UTC") if raw.index.tz is None else raw.index.tz_convert("UTC")
-    df = pd.DataFrame({"ts": (idx.asi8 // 10**9).astype("int64"),
+    df = pd.DataFrame({"ts": (idx.as_unit("ns").asi8 // 10**9).astype("int64"),
                        **{c: raw[c].to_numpy() for c in ["open", "high", "low", "close", "volume"]}})
     return df.dropna(subset=["open", "high", "low", "close"]).drop_duplicates("ts").sort_values("ts")
 
@@ -72,6 +72,11 @@ def main() -> int:
                                        "last": int(df["ts"].iloc[-1]) if len(df) else None}
             print(f"{name:<16} rows={len(df):>7} {err or ''}")
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    # sanity: a broken timestamp conversion once collapsed every file to 1 row; fail loudly instead
+    tiny = [n for n, f in manifest["files"].items() if 0 < f["rows"] < 100]
+    if tiny:
+        print(f"suspiciously small files: {tiny}")
+        return 1
     return 0 if failed < len(SYMBOLS) * 3 else 1
 
 
