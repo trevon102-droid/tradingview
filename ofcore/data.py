@@ -80,12 +80,18 @@ def get_bars(key: str, tf: str = "1h", days: int = 90, provider: str | None = No
 
 
 def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """Session-aligned resample: 4h buckets start 18:00 ET (CME open / FX roll window)."""
-    et = df.tz_convert(ET)
-    out = et.resample(rule, offset="2h").agg(
-        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    ).dropna(subset=["open"])
-    return out.tz_convert("UTC")
+    """Session-aligned N-hour bars on the ET wall clock: buckets start at the 18:00 ET CME open
+    (18, 22, 02, 06, 10, 14 for 4h) all year. Binning in absolute time would slide every bucket an
+    hour across DST changes and straddle the session open for half the year."""
+    hours = int(pd.Timedelta(rule) / pd.Timedelta(hours=1))
+    if hours < 1 or 24 % hours:
+        raise ValueError("rule must divide 24h evenly, e.g. '2h', '4h', '6h'")
+    wall = df.index.tz_convert(ET).tz_localize(None) + pd.Timedelta(hours=6)  # 18:00 ET -> 00:00
+    start = wall.floor("D") + pd.to_timedelta((wall.hour // hours) * hours, unit="h") - pd.Timedelta(hours=6)
+    out = df.groupby(start).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+    # 02:00 ET doesn't exist on spring-forward day, so shift those labels forward
+    out.index = out.index.tz_localize(ET, ambiguous=False, nonexistent="shift_forward").tz_convert("UTC")
+    return out[~out.index.duplicated(keep="first")]
 
 
 def _yahoo_bars(sym: Sym, tf: str, days: int) -> pd.DataFrame:

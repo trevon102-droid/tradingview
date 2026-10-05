@@ -331,6 +331,7 @@
       S.book = m.book; if (m.profile) S.profile = m.profile;
       pushTape(m.tape || []);
       setStatus(m.meta); S.meta = m.meta; S.dirty = true;
+      $("depth").textContent = m.meta.depth ? `· ${m.meta.depth}` : "";
     };
     ws.onclose = () => { if (id === S.wsId) setTimeout(() => id === S.wsId && connect(), 1500); };
   }

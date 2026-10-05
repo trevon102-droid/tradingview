@@ -3,6 +3,7 @@
 symbols = ["ES", "NQ", "YM", "CL", "GC", "SI", "DX", "ZN", "ZB", "USDJPY", "BTC", "ETH"]
 tf = "1h"        # 1h | 4h | 1d
 days = 60        # lookback that defines the composite profile
+lookback_bars = 3  # alert on setups that switched on within the last N closed bars (covers missed runs)
 gamma = true     # pull options chains for gamma levels (slower; ES/NQ/RTY/GC/CL/FX ETFs)
 
 [thresholds]

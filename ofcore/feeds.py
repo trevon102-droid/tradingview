@@ -15,6 +15,7 @@ import json
 import os
 import random
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
@@ -60,6 +61,7 @@ def make_feed(sym: FPSym, mode: str = "live"):
 class Feed:
     name = "base"
     live = True
+    depth = "L2"
 
     def __init__(self, sym: FPSym):
         self.sym = sym
@@ -76,6 +78,7 @@ class SimFeed(Feed):
     """Random-walk tape with order-flow structure: drifts, absorption at levels, size clusters."""
     name = "sim"
     live = False
+    depth = "synthetic"
 
     def __init__(self, sym: FPSym, seed: int | None = None, rate: float = 12.0, backfill_min: int = 180):
         super().__init__(sym)
@@ -154,6 +157,7 @@ class SimFeed(Feed):
 
 class KrakenFeed(Feed):
     name = "kraken"
+    depth = "L2 · top 100"
     WS = "wss://ws.kraken.com/v2"
     REST = "https://api.kraken.com/0/public/Trades"
     REST_PAIR = {"BTC/USD": "XBTUSD", "ETH/USD": "ETHUSD"}
@@ -228,15 +232,89 @@ def _iso_ts(s: str) -> float:
 
 # ───────────────────────── DATABENTO (CME futures) ─────────────────────────
 
+class DatabentoMerger:
+    """Turns Databento's `trades` + `mbp-10` streams into ONE consistent tape and book.
+
+    - `trades` (replayed from `start`) only fills history: prints timed before the first mbp-10 record.
+      That cutoff is by ts_event, so it doesn't matter which stream's records arrive first.
+    - From the cutoff on every print AND every book state comes from mbp-10 alone: a TRADE-action record
+      carries the aggressor print, and each record's `levels` is the full top-10 after that event.
+      Single source, so the DOM and footprint can't drift apart in time.
+    - A print already taken from `trades` is skipped when mbp-10 repeats it (matched on ts + sequence).
+    - The book is published only on F_LAST (end of an exchange event), never mid-event.
+    `stats` counts everything, so you can see what the feed actually did (see verify_databento.py).
+    """
+
+    SCALE = 1e9  # Databento fixed-point prices
+
+    def __init__(self, on_trade: OnTrade, on_book: OnBook):
+        import databento_dbn as dbn
+
+        self.dbn, self.on_trade, self.on_book = dbn, on_trade, on_book
+        self.cutoff: int | None = None  # ts_event of the first mbp-10 record
+        self.seen: set[tuple[int, int]] = set()
+        self.seen_order: deque[tuple[int, int]] = deque()
+        self.last_ts = 0
+        self.stats = {k: 0 for k in ("trades_hist", "trades_mbp", "dup_skipped", "unknown_side",
+                                     "books", "crossed", "out_of_order", "ignored_trades_live")}
+
+    def _print(self, rec, source: str) -> None:
+        side = _side(rec.side)
+        if side not in ("A", "B"):  # B = buy aggressor, A = sell aggressor, N = unknown
+            self.stats["unknown_side"] += 1
+            return
+        key = (rec.ts_event, rec.sequence)
+        if source == "mbp" and key in self.seen:
+            self.stats["dup_skipped"] += 1
+            return
+        if source == "hist":
+            self.seen.add(key)
+            self.seen_order.append(key)
+            if len(self.seen_order) > 50_000:
+                self.seen.discard(self.seen_order.popleft())
+        if rec.ts_event < self.last_ts:
+            self.stats["out_of_order"] += 1
+        self.last_ts = max(self.last_ts, rec.ts_event)
+        self.stats["trades_mbp" if source == "mbp" else "trades_hist"] += 1
+        self.on_trade(rec.ts_event / 1e9, rec.price / self.SCALE, float(rec.size), side == "B")
+
+    def handle(self, rec) -> None:
+        dbn = self.dbn
+        if isinstance(rec, dbn.MBP10Msg):
+            if self.cutoff is None:
+                self.cutoff = rec.ts_event
+            if _side(rec.action) == "T":
+                self._print(rec, "mbp")
+            if rec.flags & dbn.F_LAST:
+                bids = [(lv.bid_px / self.SCALE, float(lv.bid_sz)) for lv in rec.levels
+                        if lv.bid_sz > 0 and lv.bid_px != dbn.UNDEF_PRICE]
+                asks = [(lv.ask_px / self.SCALE, float(lv.ask_sz)) for lv in rec.levels
+                        if lv.ask_sz > 0 and lv.ask_px != dbn.UNDEF_PRICE]
+                if bids and asks and bids[0][0] >= asks[0][0]:
+                    self.stats["crossed"] += 1
+                    return  # never show a crossed/locked top-of-book
+                self.stats["books"] += 1
+                self.on_book(bids, asks, True)
+        elif isinstance(rec, dbn.TradeMsg):
+            if self.cutoff is not None and rec.ts_event >= self.cutoff:
+                self.stats["ignored_trades_live"] += 1  # mbp-10 owns prints from the cutoff on
+            else:
+                self._print(rec, "hist")
+        elif isinstance(rec, dbn.ErrorMsg):
+            raise RuntimeError(rec.err)
+
+
 class DatabentoFeed(Feed):
-    """CME Globex via Databento live: `trades` (aggressor side on every print) + `mbp-10` (top-10 book).
-    Replays the last `backfill_min` minutes on connect so the footprint isn't empty."""
+    """CME Globex via Databento live. Replays the last `backfill_min` minutes of `trades` so the
+    footprint isn't empty, then runs live off `mbp-10` (top 10 levels only, so it's labeled L2 · top 10)."""
     name = "databento"
+    depth = "L2 · top 10"
     DATASET = "GLBX.MDP3"
 
     def __init__(self, sym: FPSym, backfill_min: int = 120):
         super().__init__(sym)
         self.backfill_min = backfill_min
+        self.merger: DatabentoMerger | None = None
 
     async def run(self, on_trade: OnTrade, on_book: OnBook) -> None:
         key = os.environ.get("DATABENTO_API_KEY")
@@ -244,39 +322,33 @@ class DatabentoFeed(Feed):
             self.status, self.error = "no key", "Set DATABENTO_API_KEY for live CME data (or switch the feed to SIM)."
             return
         loop = asyncio.get_running_loop()
+        safe_trade = lambda *a: loop.call_soon_threadsafe(on_trade, *a)  # noqa: E731
+        safe_book = lambda *a: loop.call_soon_threadsafe(on_book, *a)  # noqa: E731
         backoff = 1
         while True:
             try:
-                await asyncio.to_thread(self._stream, key, loop, on_trade, on_book)
+                await asyncio.to_thread(self._stream, key, safe_trade, safe_book)
             except Exception as e:
                 self.status, self.error = "reconnecting", str(e)[:200]
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
-    def _stream(self, key: str, loop: asyncio.AbstractEventLoop, on_trade: OnTrade, on_book: OnBook) -> None:
+    def _stream(self, key: str, on_trade: OnTrade, on_book: OnBook) -> None:
         import databento as db
 
-        scale = 1e9  # Databento fixed-point prices
         client = db.Live(key=key)
         start = int((time.time() - self.backfill_min * 60) * 1e9)
         client.subscribe(dataset=self.DATASET, schema="trades", stype_in="continuous",
                          symbols=[self.sym.feed_symbol], start=start)
         client.subscribe(dataset=self.DATASET, schema="mbp-10", stype_in="continuous",
                          symbols=[self.sym.feed_symbol])
+        self.merger = DatabentoMerger(on_trade, on_book)
         self.status, self.error = "live", None
         for rec in client:
-            if isinstance(rec, db.TradeMsg):
-                side = _side(rec.side)
-                if side in ("A", "B"):  # B = buy aggressor, A = sell aggressor, N = unknown
-                    loop.call_soon_threadsafe(on_trade, rec.ts_event / 1e9, rec.price / scale, float(rec.size), side == "B")
-            elif isinstance(rec, db.MBP10Msg):
-                bids = [(lv.bid_px / scale, float(lv.bid_sz)) for lv in rec.levels if lv.bid_sz > 0]
-                asks = [(lv.ask_px / scale, float(lv.ask_sz)) for lv in rec.levels if lv.ask_sz > 0]
-                loop.call_soon_threadsafe(on_book, bids, asks, True)
-            elif isinstance(rec, db.ErrorMsg):
-                raise RuntimeError(rec.err)
+            self.merger.handle(rec)
 
 
 def _side(s) -> str:
+    """Databento Side/Action enums -> 'A' / 'B' / 'T' ... (also accepts raw str or int codes)."""
     s = getattr(s, "value", s)
     return chr(s) if isinstance(s, int) else str(s)

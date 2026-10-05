@@ -21,15 +21,18 @@ from pathlib import Path
 
 import requests
 
-from ofcore import SYMBOLS, auction_read, gamma_levels, get_bars, trading_day
-from ofcore.setups import Signal, Thresholds, detect
+import pandas as pd
+
+from ofcore import SYMBOLS, gamma_levels, get_bars
+from ofcore.data import TF_MINUTES
+from ofcore.setups import Signal, Thresholds, closed_bars, events
 
 HERE = Path(__file__).parent
 ICON = {"long": "🟢", "short": "🔴", "info": "🔵"}
 
 
 def load_config(path: Path) -> dict:
-    cfg = {"symbols": ["ES", "NQ", "CL", "GC", "6E"], "tf": "1h", "days": 60, "gamma": True,
+    cfg = {"symbols": ["ES", "NQ", "CL", "GC", "6E"], "tf": "1h", "days": 60, "gamma": True, "lookback_bars": 3,
            "state_file": str(HERE / ".state.json"), "thresholds": {}}
     if path.exists():
         cfg.update(tomllib.loads(path.read_text()))
@@ -44,17 +47,16 @@ def scan(cfg: dict) -> tuple[list[tuple[str, Signal]], list[dict]]:
             print(f"skip unknown symbol {key}", file=sys.stderr)
             continue
         try:
-            df = get_bars(key, cfg["tf"], cfg["days"])
-            a = auction_read(df, SYMBOLS[key].tick)
+            df = closed_bars(get_bars(key, cfg["tf"], cfg["days"]), pd.Timedelta(minutes=TF_MINUTES[cfg["tf"]]))
             g = None
             if cfg.get("gamma") and SYMBOLS[key].gamma_proxy:
                 try:
-                    g = gamma_levels(key, a["last"])
+                    g = gamma_levels(key, float(df["close"].iloc[-1]))
                 except Exception as e:  # options data is flaky; never kill the scan over it
                     print(f"{key}: gamma unavailable ({e})", file=sys.stderr)
-            day = str(trading_day(df).iloc[-1].date())
-            sigs = detect(key, df, a, g, th)
-            hits += [(s.key(day), s) for s in sigs]
+            evs, a = events(key, df, SYMBOLS[key].tick, g, th, cfg.get("lookback_bars", 3))
+            sigs = [s for _, s in evs]
+            hits += evs
             rows.append({"key": key, "last": a["last"], "bias": a["bias"], "state": a["state"], "read": a["read"],
                          "rvol": a["rvol"], "signals": len(sigs), "pine": g["pine"] if g else None,
                          "regime": g["regime"] if g else None})
@@ -65,7 +67,7 @@ def scan(cfg: dict) -> tuple[list[tuple[str, Signal]], list[dict]]:
 
 
 def print_table(rows: list[dict], hits: list[tuple[str, Signal]]) -> None:
-    print(f"\n{'SYM':<7}{'LAST':>12}  {'BIAS':<8}{'STATE':<16}{'READ':<24}{'RVOL':>6}  GAMMA")
+    print(f"\n{'SYM':<7}{'LAST':>12}  {'BIAS':<8}{'STATE':<16}{'READ':<24}{'RVOL':>6}  EST.GAMMA")
     for r in rows:
         if "error" in r:
             print(f"{r['key']:<7}{'error':>12}  {r['error'][:60]}")
@@ -78,7 +80,8 @@ def print_table(rows: list[dict], hits: list[tuple[str, Signal]]) -> None:
             print(f"{ICON[s.direction]} {s.symbol:<6} {s.code:<20} {s.text}")
     pine = [(r["key"], r["pine"]) for r in rows if r.get("pine")]
     if pine:
-        print("\nGamma levels → paste into pine/of_gamma_levels.pine:")
+        print("\nEstimated dealer gamma (ETF proxy, assumes dealers long calls/short puts)"
+              " → paste into pine/of_gamma_levels.pine:")
         for k, p in pine:
             print(f"  {k:<6} {p}")
 
@@ -123,8 +126,8 @@ def run_once(cfg: dict, dry: bool) -> None:
     print(f"\n{len(fresh)} new signal(s), {len(hits) - len(fresh)} already alerted")
     notify(fresh)
     seen |= {k for k, _ in hits}
-    # keep the file small: drop keys older than ~2 weeks
-    keep = sorted(seen, key=lambda k: k.rsplit(":", 1)[-1])[-2000:]
+    # keep the file small: newest 2000 event keys (key ends in the bar's unix time)
+    keep = sorted(seen, key=lambda k: int(k.rsplit(":", 1)[-1]) if k.rsplit(":", 1)[-1].isdigit() else 0)[-2000:]
     state_path.write_text(json.dumps(keep))
 
 

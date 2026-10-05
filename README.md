@@ -69,6 +69,19 @@ The auction *inside* each candle, built from every trade and who was aggressive.
 On connect it backfills the last ~2h so the chart isn't empty. Without a key, Live mode tells you so.
 It never falls back to fake data on its own.
 
+**CME data path (Databento):** history comes from `trades`, then *everything* live (prints + book) comes from
+`mbp-10` alone, so the footprint and DOM can't drift apart in time. Book updates are only shown at the end of
+each exchange event (`F_LAST`), crossed books are rejected, and the DOM is labeled **L2 · top 10** because
+that's all MBP-10 carries. **Before trusting it, run the self-check once you have a key:**
+
+```bash
+DATABENTO_API_KEY=... python -m ofcore.verify_databento NQ --minutes 3
+```
+
+It replays both streams and confirms every live print matches the trades feed (time, sequence, price, size,
+aggressor side), the book is never crossed, timestamps don't go backwards, and buys print at the ask / sells at
+the bid. Prints `CLEAN` or tells you exactly what to look at.
+
 ## 2. Pine pack (`pine/`)
 
 Open TradingView → Pine Editor → paste → *Add to chart*. All are Pine v6.
@@ -90,6 +103,10 @@ python -m scanner.scan --symbols ES,NQ,6E --tf 4h
 ```
 
 Set `DISCORD_WEBHOOK_URL` and/or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. Tune `scanner/config.toml`.
+
+Alerts are **events**: a setup alerts on the closed bar where it switches on (the still-forming candle is
+ignored). If it stays on, there's no repeat. If it turns off and fires again later (accepted, fell back in,
+accepted again), that's a new alert. On GitHub the "already alerted" memory lives on a `scanner-state` branch.
 It also runs on GitHub every 2h (Sun–Fri) via `.github/workflows/scanner.yml`. Just add the `DISCORD_WEBHOOK_URL` repo secret.
 
 **Setups it flags**
@@ -113,9 +130,11 @@ Each scan also prints Pine-ready gamma strings per market.
   (Yahoo has no bid/ask split). It's directionally solid on swing timeframes but it isn't a footprint.
   The Pine delta script uses intrabars, so trust that one more. For true footprint/bid-ask data you'd plug a
   feed like Rithmic / CQG / Databento into `ofcore/data.py`.
-- **Gamma** comes from the ETF proxy's options chain (SPY→ES, QQQ→NQ, IWM→RTY, GLD→GC, USO→CL, FXE→6E...),
+- **Gamma is estimated, not observed.** It comes from the ETF proxy's options chain (SPY→ES, QQQ→NQ, IWM→RTY, GLD→GC, USO→CL, FXE→6E...),
   scaled to the futures price. Index proxies are good. FX/commodity ETF proxies are thin, so treat them as rough context.
 - Yahoo intraday is delayed and capped (~730 days of 1h). Fine for swing work, not for execution.
+- **Don't expose the dashboard publicly.** It binds to localhost. If you run it on a server, put it behind
+  Tailscale / Cloudflare Access, or at minimum set `OF_TOKEN=...` and open it once with `?token=...`.
 - Not financial advice, it's a tool. Size your risk.
 
 ## Layout

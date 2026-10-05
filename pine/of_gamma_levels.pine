@@ -4,7 +4,7 @@
 // (SPY→ES, QQQ→NQ, GLD→GC, …), maps it to futures prices, and gives you a string to paste here:
 //     zeroGamma;callWall;putWall;major1,major2,...
 //@version=6
-indicator("OF · Gamma Levels", "OF Gamma", overlay = true, max_lines_count = 50, max_labels_count = 50)
+indicator("OF · Est. Dealer Gamma", "OF Est γ", overlay = true, max_lines_count = 50, max_labels_count = 50)
 
 levelsIn = input.string("", "Paste levels", tooltip = "From the dashboard Gamma card (Copy) or the scanner output: zg;call;put;majors")
 scale    = input.float(1.0, "Scale", step = 0.0001, tooltip = "Leave 1 for futures-mapped levels. Use e.g. 10 if you pasted raw SPY strikes onto ES.")

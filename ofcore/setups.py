@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 
 import pandas as pd
 
+from .auction import auction_read
 from .indicators import anchored_vwap, ema
 
 
@@ -17,8 +18,9 @@ class Signal:
     text: str
     price: float
 
-    def key(self, day: str) -> str:
-        return f"{self.symbol}:{self.code}:{day}"
+    def key(self, bar_time: int) -> str:
+        """One alert per setup *event*: the bar (unix sec) where it switched on."""
+        return f"{self.symbol}:{self.code}:{bar_time}"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -81,11 +83,38 @@ def detect(sym: str, df: pd.DataFrame, a: dict, gamma: dict | None = None, th: T
         prev = float(df["close"].iloc[-2])
         if (prev - zg) * (px - zg) < 0:
             regime = "negative γ, so expect expansion" if px < zg else "positive γ, so expect mean reversion"
-            add("gamma_flip_cross", "info", f"Crossed zero gamma {zg:g} ({regime}).")
+            add("gamma_flip_cross", "info", f"Crossed est. zero gamma {zg:g} ({regime}).")
         elif abs(px - zg) <= th.gamma_atr * atr:
-            add("gamma_flip_near", "info", f"Sitting on zero gamma {zg:g}. Vol regime can flip here.")
+            add("gamma_flip_near", "info", f"Sitting on est. zero gamma {zg:g}. Vol regime can flip here.")
         for name in ("call_wall", "put_wall"):
             lvl = gamma.get(name)
             if lvl and abs(px - lvl) <= th.gamma_atr * atr:
-                add(name, "info", f"At {name.replace('_', ' ')} {lvl:g}. Dealer hedging tends to pin/reject here.")
+                add(name, "info", f"At est. {name.replace('_', ' ')} {lvl:g}. Dealer hedging tends to pin/reject here.")
     return out
+
+
+def closed_bars(df: pd.DataFrame, bar: pd.Timedelta, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Drop the still-forming last bar. Signals on an unfinished candle flicker on and off."""
+    now = now or pd.Timestamp.now(tz="UTC")
+    return df.iloc[:-1] if len(df) and df.index[-1] + bar > now else df
+
+
+def events(sym: str, df: pd.DataFrame, tick: float, gamma: dict | None = None, th: Thresholds = Thresholds(),
+           lookback: int = 3) -> tuple[list[tuple[str, Signal]], dict]:
+    """Setups that switched ON within the last `lookback` closed bars, keyed by the bar they fired on.
+
+    A setup that stays on doesn't re-alert. If it turns off and later on again (e.g. accepted above
+    value, fell back in, accepted again), that's a new event with a new key. Uses only bars up to each
+    evaluation point, so no look-ahead. Returns (events newest first, auction read of the latest bar)."""
+    states, reads = [], []
+    for k in range(lookback + 1):
+        sub = df.iloc[: len(df) - k]
+        a = auction_read(sub, tick)
+        reads.append(a)
+        states.append({s.code: s for s in detect(sym, sub, a, gamma, th)})
+    out = []
+    for k in range(lookback):
+        bar_t = int(df.index[len(df) - 1 - k].timestamp())
+        for code in states[k].keys() - states[k + 1].keys():
+            out.append((states[k][code].key(bar_t), states[k][code]))
+    return out, reads[0]

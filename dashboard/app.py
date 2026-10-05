@@ -1,14 +1,20 @@
-"""Personal orderflow dashboard. Run from repo root:  uvicorn dashboard.app:app --reload"""
+"""Personal orderflow dashboard. Run from repo root:  uvicorn dashboard.app:app --reload
+
+Binds to localhost by default. If you ever expose it (--host 0.0.0.0, a VPS...), set OF_TOKEN and open
+the page once with ?token=<OF_TOKEN>; it sets a cookie. Better still, keep it behind Tailscale/Cloudflare Access.
+"""
 
 from __future__ import annotations
 
 import math
+import os
+import secrets
 import time
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from ofcore import (SYMBOLS, anchor_key, anchored_vwap, auction_read, cvd, ema, est_delta, gamma_levels, get_bars,
@@ -22,6 +28,25 @@ app = FastAPI(title="Orderflow Desk")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 _cache: dict[tuple, tuple[float, object]] = {}
+
+TOKEN = os.environ.get("OF_TOKEN")
+TF = Query("1h", pattern="^(1h|4h|1d)$")
+
+
+def _authorized(token: str | None) -> bool:
+    return not TOKEN or (token is not None and secrets.compare_digest(token, TOKEN))
+
+
+@app.middleware("http")
+async def auth(request: Request, call_next):
+    q = request.query_params.get("token")
+    bearer = request.headers.get("authorization", "").removeprefix("Bearer ").strip() or None
+    if not any(_authorized(t) for t in (q, request.cookies.get("of_token"), bearer)):
+        return PlainTextResponse("unauthorized: open with ?token=<OF_TOKEN>", status_code=401)
+    resp = await call_next(request)
+    if TOKEN and q and _authorized(q):
+        resp.set_cookie("of_token", q, httponly=True, samesite="strict")
+    return resp
 
 
 def cached(key: tuple, ttl: float, fn):
@@ -70,10 +95,19 @@ def fp_symbols():
 
 
 @app.websocket("/ws/footprint")
-async def ws_footprint(ws: WebSocket, sym: str = "ES", mode: str = "live", bar: int = 300, row: int = 0,
-                       ratio: float = 3.0, stack: int = 3):
+async def ws_footprint(ws: WebSocket,
+                       sym: str = Query("ES", max_length=12),
+                       mode: str = Query("live", pattern="^(live|sim)$"),
+                       bar: int = Query(300, ge=15, le=86_400),
+                       row: int = Query(0, ge=0, le=10_000),
+                       ratio: float = Query(3.0, ge=1.0, le=20.0, allow_inf_nan=False),
+                       stack: int = Query(3, ge=2, le=20)):
+    # websockets skip HTTP middleware, so check the token here (cookie is sent on same-origin upgrades)
+    if not any(_authorized(t) for t in (ws.query_params.get("token"), ws.cookies.get("of_token"))):
+        await ws.close(code=1008)
+        return
     row = row or (FP_SYMBOLS[sym].row_ticks if sym in FP_SYMBOLS else 1)
-    await footprint_hub.serve(ws, sym, mode, max(15, bar), max(1, row), ratio, max(2, stack))
+    await footprint_hub.serve(ws, sym, mode, bar, row, ratio, stack)
 
 
 @app.get("/api/symbols")
@@ -91,7 +125,7 @@ def _bars(sym: str, tf: str, days: int) -> pd.DataFrame:
 
 
 @app.get("/api/chart")
-def chart(sym: str = "ES", tf: str = "1h", days: int = 60):
+def chart(sym: str = Query("ES", max_length=12), tf: str = TF, days: int = Query(60, ge=5, le=730)):
     df = _bars(sym, tf, days)
     idx = df.index
     w, m = anchored_vwap(df, "W"), anchored_vwap(df, "M")
@@ -111,7 +145,7 @@ def chart(sym: str = "ES", tf: str = "1h", days: int = 60):
 
 
 @app.get("/api/gamma")
-def gamma(sym: str = "ES"):
+def gamma(sym: str = Query("ES", max_length=12)):
     if sym not in SYMBOLS:
         raise HTTPException(404, f"unknown symbol {sym}")
     df = _bars(sym, "1h", 10)
@@ -123,7 +157,7 @@ def gamma(sym: str = "ES"):
 
 
 @app.get("/api/watchlist")
-def watchlist(tf: str = "1h", days: int = 30):
+def watchlist(tf: str = TF, days: int = Query(30, ge=5, le=730)):
     out = []
     for key in SYMBOLS:
         try:

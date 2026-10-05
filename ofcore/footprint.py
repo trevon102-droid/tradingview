@@ -25,11 +25,19 @@ class FPBar:
     min_delta: float = 0.0
     volume: float = 0.0
     trades: int = 0
+    first_ts: float = math.inf
+    last_ts: float = -math.inf
 
-    def add(self, row: int, price: float, size: float, is_buy: bool) -> None:
+    def add(self, row: int, price: float, size: float, is_buy: bool, ts: float) -> None:
         lv = self.levels.setdefault(row, [0.0, 0.0])
         lv[1 if is_buy else 0] += size
-        self.high, self.low, self.close = max(self.high, price), min(self.low, price), price
+        self.high, self.low = max(self.high, price), min(self.low, price)
+        # open/close follow trade time, not arrival order, so a late print can't overwrite them
+        if ts < self.first_ts:
+            self.first_ts, self.open = ts, price
+        if ts >= self.last_ts:
+            self.last_ts, self.close = ts, price
+        # max/min delta assume arrival order; a late print shifts the path slightly (totals stay exact)
         self.delta += size if is_buy else -size
         self.max_delta, self.min_delta = max(self.max_delta, self.delta), min(self.min_delta, self.delta)
         self.volume += size
@@ -95,26 +103,41 @@ class FootprintBuilder:
         # session traded volume at price (for the DOM "traded" column), keyed by tick row
         self.session: dict[int, list[float]] = {}
         self.last: float | None = None
+        self.last_ts = -math.inf
 
     def row(self, price: float) -> int:
         return math.floor(price / self.row_size + 1e-9)
 
     def on_trade(self, ts: float, price: float, size: float, is_buy: bool) -> bool:
-        """Returns True if this trade opened a new bar."""
+        """Book one print. Returns True if it opened a new (latest) bar.
+
+        Late prints (arriving after a newer bar opened) go into their own bar, which is created in
+        order if that slot had no trades yet, and always count in the session profile. Prints older
+        than the oldest kept bar only count in the session profile."""
         t = int(ts // self.bar_seconds * self.bar_seconds)
         new = not self.bars or t > self.bars[-1].t
+        bar = None
         if new:
-            self.bars.append(FPBar(t, price, price, price, price))
-        elif t < self.bars[-1].t:  # late print from an earlier bar: book it there if we still have it
-            for b in reversed(self.bars):
-                if b.t == t:
-                    b.add(self.row(price), price, size, is_buy)
-                    break
-            return False
-        self.bars[-1].add(self.row(price), price, size, is_buy)
+            bar = FPBar(t, price, price, price, price)
+            self.bars.append(bar)
+        elif t == self.bars[-1].t:
+            bar = self.bars[-1]
+        elif t >= self.bars[0].t:  # late print inside the kept window
+            i = next(i for i in range(len(self.bars) - 1, -1, -1) if self.bars[i].t <= t)
+            if self.bars[i].t == t:
+                bar = self.bars[i]
+            else:  # empty slot between bars: create it in time order
+                bar = FPBar(t, price, price, price, price)
+                if len(self.bars) == self.bars.maxlen:  # deque.insert raises when full: drop the oldest
+                    self.bars.popleft()
+                    i -= 1
+                self.bars.insert(i + 1, bar)
+        if bar is not None:
+            bar.add(self.row(price), price, size, is_buy, ts)
         s = self.session.setdefault(math.floor(price / self.tick + 1e-9), [0.0, 0.0])
         s[1 if is_buy else 0] += size
-        self.last = price
+        if ts >= self.last_ts:
+            self.last_ts, self.last = ts, price
         return new
 
     def snapshot(self, n: int = 120, ratio: float = 3.0, stack: int = 3) -> list[dict]:

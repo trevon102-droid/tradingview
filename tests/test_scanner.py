@@ -50,4 +50,35 @@ def test_chunks_respect_limit():
 
 def test_signal_key():
     s = Signal("ES", "accept_above", "long", "t", 1.0)
-    assert s.key("2026-10-05") == "ES:accept_above:2026-10-05"
+    assert s.key(1791200000) == "ES:accept_above:1791200000"
+
+
+def test_setup_that_refires_same_day_is_a_new_event(monkeypatch):
+    """Regression: accept -> fall back in -> accept again must give TWO alerts, not one per day."""
+    from ofcore import setups
+
+    df = get_bars("ES", "1h", 30)
+    n = len(df)
+    on_at = {n, n - 2}  # on at latest bar, off one bar earlier, on two bars earlier, off before that
+    monkeypatch.setattr(setups, "auction_read", lambda sub, tick: {"n": len(sub)})
+    monkeypatch.setattr(setups, "detect", lambda sym, sub, a, g, th: [Signal(sym, "accept_above", "long", "t", 1.0)]
+                        if a["n"] in on_at else [])
+    evs, _ = setups.events("ES", df, 0.25, lookback=3)
+    keys = sorted(k for k, _ in evs)
+    assert len(keys) == 2 and len(set(keys)) == 2
+    assert {int(k.rsplit(":", 1)[1]) for k in keys} == {int(df.index[-1].timestamp()), int(df.index[-3].timestamp())}
+
+    # setup that just stays on doesn't re-alert
+    monkeypatch.setattr(setups, "detect", lambda sym, sub, a, g, th: [Signal(sym, "accept_above", "long", "t", 1.0)])
+    assert setups.events("ES", df, 0.25, lookback=3)[0] == []
+
+
+def test_closed_bars_drops_forming_candle():
+    import pandas as pd
+
+    from ofcore.setups import closed_bars
+
+    df = get_bars("ES", "1h", 5)
+    last = df.index[-1]
+    assert len(closed_bars(df, pd.Timedelta(hours=1), now=last + pd.Timedelta(minutes=30))) == len(df) - 1
+    assert len(closed_bars(df, pd.Timedelta(hours=1), now=last + pd.Timedelta(hours=1))) == len(df)

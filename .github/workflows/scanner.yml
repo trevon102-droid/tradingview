@@ -1,10 +1,20 @@
-# Run the scanner on GitHub's runners on a schedule, so your machine doesn't need to be on.
+# Runs the scanner on GitHub's runners on a schedule, so your machine doesn't need to be on.
+# Needs repo secret DISCORD_WEBHOOK_URL (and/or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID).
+# Alert memory (scanner/.state.json) lives on its own `scanner-state` branch: one small JSON file,
+# force-updated each run. If it's ever lost, only setups from the last few bars can re-alert.
 name: OF scanner
 
 on:
   schedule:
     - cron: "7 */2 * * 0-5"   # every 2h, Sun–Fri (UTC). Futures/FX week.
   workflow_dispatch:
+
+permissions:
+  contents: write   # to save alert state to the scanner-state branch
+
+concurrency:
+  group: of-scanner  # never two runs racing on the same state
+  cancel-in-progress: false
 
 jobs:
   scan:
@@ -16,14 +26,29 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      # keep "already alerted" memory between runs
-      - uses: actions/cache@v4
-        with:
-          path: scanner/.state.json
-          key: scanner-state-${{ github.run_id }}
-          restore-keys: scanner-state-
-      - run: python -m scanner.scan
+
+      - name: Load alert state
+        run: |
+          if git fetch --depth=1 origin scanner-state 2>/dev/null; then
+            git show FETCH_HEAD:state.json > scanner/.state.json
+            echo "loaded $(python -c 'import json;print(len(json.load(open("scanner/.state.json"))))') keys"
+          else
+            echo "no saved state yet"
+          fi
+
+      - name: Scan
+        run: python -m scanner.scan
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Save alert state
+        if: always() && hashFiles('scanner/.state.json') != ''
+        run: |
+          git config user.name "of-scanner"
+          git config user.email "of-scanner@users.noreply.github.com"
+          blob=$(git hash-object -w scanner/.state.json)
+          tree=$(printf '100644 blob %s\tstate.json\n' "$blob" | git mktree)
+          commit=$(git commit-tree "$tree" -m "scanner state $(date -u +%FT%TZ)")
+          git push --force origin "$commit:refs/heads/scanner-state"

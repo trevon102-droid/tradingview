@@ -106,3 +106,45 @@ def test_kraken_message_parsing():
     assert trades == [(1791210600.5, 98000.1, 0.25, False)]
     assert books == [([(98000.0, 1.5)], [(98000.2, 0.7)], True)]
     assert _side("B") == "B" and _side(65) == "A"
+
+
+def test_late_print_updates_session_profile_and_keeps_close():
+    """Regression: late prints must land in their bar AND the session profile, without moving close/last."""
+    b = build([(10, 100.0, 1, True), (20, 100.5, 1, True), (70, 101.0, 2, True), (15, 99.0, 4, False)])
+    first = b.bars[0]
+    assert first.volume == 6 and first.low == 99.0
+    assert first.close == 100.5, "late print at t=15 must not become the close of a bar that traded at t=20"
+    assert first.open == 100.0
+    assert b.last == 101.0
+    sess = {p: v for p, *v in b.session_profile()}
+    assert sess[99.0] == [4, 0], "late print missing from session profile"
+    assert sum(v[0] + v[1] for v in sess.values()) == sum(x.volume for x in b.bars)
+
+
+def test_late_print_earlier_than_first_trade_becomes_open():
+    b = build([(30, 100.0, 1, True), (70, 101.0, 1, True), (5, 98.0, 1, False)])
+    assert b.bars[0].open == 98.0 and b.bars[0].close == 100.0
+
+
+def test_late_print_into_empty_slot_is_inserted_in_order():
+    b = build([(10, 100.0, 1, True), (130, 102.0, 1, True), (70, 101.0, 3, False)])
+    assert [x.t for x in b.bars] == [0, 60, 120]
+    assert b.bars[1].volume == 3 and b.last == 102.0
+
+
+def test_late_print_into_empty_slot_when_full_does_not_crash():
+    b = FootprintBuilder(0.25, 60, 1, keep=3)
+    for ts in (10, 130, 190):
+        b.on_trade(ts, 100.0, 1, True)
+    b.on_trade(70, 99.0, 1, False)  # slot 60 is empty and the deque is full
+    assert [x.t for x in b.bars] == [60, 120, 180]
+    assert len(b.bars) == 3
+
+
+def test_print_older_than_window_still_counts_in_session():
+    b = FootprintBuilder(0.25, 60, 1, keep=2)
+    for ts in (10, 70, 130):
+        b.on_trade(ts, 100.0, 1, True)
+    b.on_trade(5, 97.0, 2, False)
+    assert [x.t for x in b.bars] == [60, 120]
+    assert {p: v for p, *v in b.session_profile()}[97.0] == [2, 0]

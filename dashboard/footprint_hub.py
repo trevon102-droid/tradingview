@@ -52,7 +52,7 @@ class Hub:
     def meta(self) -> dict:
         f = self.feed
         return {"sym": self.sym.key, "name": self.sym.name, "tick": self.sym.tick, "feed": f.name,
-                "live": f.live, "status": f.status, "error": f.error}
+                "live": f.live, "status": f.status, "error": f.error, "depth": f.depth}
 
 
 _hubs: dict[tuple[str, str], Hub] = {}

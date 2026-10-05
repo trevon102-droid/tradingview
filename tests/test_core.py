@@ -99,3 +99,26 @@ def test_zero_volume_fx_degrades_gracefully():
     assert a["composite"]["val"] <= a["composite"]["poc"] <= a["composite"]["vah"]
     assert a["rvol"] is None
     assert anchored_vwap(df, "W")["vwap"].notna().all()
+
+
+def test_4h_buckets_stay_session_aligned_across_dst():
+    """Regression: 4h bars must start 18/22/02/06/10/14 ET in winter AND summer, never straddle 18:00."""
+    from ofcore.data import resample
+
+    h = get_bars("ES", "1h", 700, provider="demo")
+    four = resample(h, "4h")
+    et = four.index.tz_convert("America/New_York")
+    assert set(et.hour) <= {18, 22, 2, 6, 10, 14, 3}  # 03:00 only from the shifted spring-forward label
+    assert (et.hour == 3).sum() <= 2
+    # each 4h bar's OHLCV equals the 1h bars that fall inside its wall-clock bucket
+    het = h.index.tz_convert("America/New_York")
+    for t in list(et[:50]) + list(et[-50:]):
+        end = t + pd.Timedelta(hours=4)
+        sub = h[(het >= t) & (het < end)]
+        if t.hour == 3 or sub.empty:
+            continue
+        row = four.loc[t.tz_convert("UTC")]
+        assert row["high"] == sub["high"].max() and row["low"] == sub["low"].min()
+        assert row["volume"] == sub["volume"].sum()
+        assert not ((sub.index.tz_convert("America/New_York").hour == 18) & (t.hour != 18)).any()
+    assert four["volume"].sum() == h["volume"].sum()  # nothing dropped or double counted
