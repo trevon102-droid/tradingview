@@ -4,4 +4,6 @@ yfinance>=0.2.50
 fastapi>=0.110
 uvicorn>=0.29
 requests>=2.31
+websockets>=12          # Kraken live feed
+# databento>=0.40       # uncomment for live CME footprint (needs DATABENTO_API_KEY)
 pytest>=8

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Footprint + DOM</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/footprint.css">
+</head>
+<body class="fp">
+  <header class="top">
+    <a class="brand" href="/">OF<span>desk</span></a>
+    <nav class="nav"><a href="/">Chart</a><a class="on" href="/footprint">Footprint</a></nav>
+    <select id="sym" title="Market"></select>
+    <div class="seg" id="modeSeg" title="Data feed">
+      <button data-mode="live" class="on">Live</button><button data-mode="sim">Sim</button>
+    </div>
+    <select id="bar" title="Bar size">
+      <option value="60">1m</option><option value="300" selected>5m</option><option value="900">15m</option>
+      <option value="1800">30m</option><option value="3600">1h</option>
+    </select>
+    <select id="row" title="Row size (ticks)"></select>
+    <select id="ratio" title="Diagonal imbalance ratio">
+      <option value="2.5">2.5×</option><option value="3" selected>3×</option><option value="4">4×</option>
+    </select>
+    <div class="seg" id="viewSeg" title="Cell display">
+      <button data-view="bidask" class="on">Bid×Ask</button><button data-view="delta">Delta</button><button data-view="volume">Vol</button>
+    </div>
+    <span id="status" class="badge">connecting…</span>
+    <span class="hint muted">drag = pan · wheel = rows · shift+wheel = width · dbl-click = follow</span>
+  </header>
+
+  <main class="fpgrid">
+    <section class="fpwrap">
+      <canvas id="fp"></canvas>
+      <div id="tip" class="tip" hidden></div>
+      <div id="msg" class="err" hidden></div>
+    </section>
+    <aside class="domwrap">
+      <div class="domhead">
+        <span>Sells</span><span>Bid</span><span>Price</span><span>Ask</span><span>Buys</span>
+      </div>
+      <canvas id="dom"></canvas>
+      <div class="tapehead">
+        <span>Time &amp; sales</span>
+        <label class="muted">min size <input id="minSize" type="number" min="0" step="any" value="0"></label>
+      </div>
+      <ul id="tape" class="tape"></ul>
+    </aside>
+  </main>
+  <script src="/static/footprint.js"></script>
+</body>
+</html>

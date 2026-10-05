@@ -24,6 +24,9 @@ button, select, input { font: inherit; color: inherit; }
   padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
 .brand { font-weight: 800; letter-spacing: .5px; }
+.nav { display: flex; gap: 2px; }
+.nav a { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 8px; }
+.nav a.on, .nav a:hover { background: var(--line); color: var(--text); }
 .brand span { color: var(--accent); font-weight: 600; margin-left: 2px; }
 .sym { display: flex; align-items: baseline; gap: 8px; min-width: 220px; }
 .sym b { font-size: 16px; }

@@ -8,6 +8,7 @@ Three separate tools share one engine (`ofcore/`):
 | | What | Run |
 |---|---|---|
 | **1. Dashboard** | TV-style web app: candles, composite profile, session POC/VA, naked POCs, VWAPs, EMAs, CVD pane, auction read, gamma levels | `uvicorn dashboard.app:app --reload` → http://localhost:8000 |
+| **1b. Footprint + DOM** | Bid×ask per price inside every candle, diagonal imbalances, stacked-imbalance zones, unfinished auctions, plus a DOM ladder + time & sales | same server → http://localhost:8000/footprint |
 | **2. Pine pack** | 4 indicators you paste into real TradingView | `pine/*.pine` |
 | **3. Scanner** | Scans your list for auction setups and pings Discord/Telegram, but only on *new* signals | `python -m scanner.scan` |
 
@@ -41,6 +42,32 @@ Markets live in `ofcore/data.py → SYMBOLS` (ticker, tick size, options proxy).
   look-above-and-fail, CVD divergence, RVOL, next level up/down, plain-English notes
 - **Gamma**: regime, flip, walls, plus a **Copy** button that gives you the string for the Pine gamma script
 - Keys: `1` / `4` / `d` switch timeframe, `r` refreshes. Toggles are remembered.
+
+## 1b. Footprint + DOM (`/footprint`)
+
+The auction *inside* each candle, built from every trade and who was aggressive.
+
+- **Cells:** `bid × ask` per price row. Left/red = sellers hitting the bid, right/green = buyers lifting the offer.
+  Switch to **Delta** (ask − bid) or **Vol** view.
+- **Diagonal imbalances** (default 3×) light up bold. **3+ stacked** become zones that extend right as S/R.
+- **POC** per candle boxed in gold. **Unfinished auctions** (both sides traded at the extreme) get a gold dot.
+- Under each candle: time, **delta**, **volume**. Right edge: session volume profile.
+- **DOM ladder:** resting bids/asks (walls ≥3× avg go bold), recent 15s aggression per price (Sells / Buys
+  columns), session traded volume behind the price column, last trade boxed.
+- **Time & sales** with a min-size filter. Top-5% prints get highlighted.
+- Controls: bar size (1m–1h), row size (ticks), imbalance ratio. Drag to pan, wheel = row height,
+  shift+wheel = column width, double-click = snap back to live.
+
+**Data feeds** (needs aggressor-tagged trades, which Yahoo doesn't have):
+
+| Market | Feed | Cost | Setup |
+|---|---|---|---|
+| BTC, ETH | Kraken public websocket | free | nothing, just works |
+| ES, NQ, MES, MNQ, YM, CL, GC | Databento (CME Globex `trades` + `mbp-10`) | usage-based | `pip install databento`, `export DATABENTO_API_KEY=...` |
+| anything | **Sim** button | free | synthetic tape for testing, always badged **SIM** |
+
+On connect it backfills the last ~2h so the chart isn't empty. Without a key, Live mode tells you so.
+It never falls back to fake data on its own.
 
 ## 2. Pine pack (`pine/`)
 
@@ -94,7 +121,7 @@ Each scan also prints Pine-ready gamma strings per market.
 ## Layout
 
 ```
-ofcore/      engine: data, indicators, profile, auction read, gamma, setups
+ofcore/      engine: data, indicators, profile, auction read, gamma, setups, footprint, live feeds
 dashboard/   FastAPI + static frontend (lightweight-charts vendored, Apache-2.0)
 pine/        TradingView indicators
 scanner/     CLI scanner + config (scheduled run: .github/workflows/scanner.yml)

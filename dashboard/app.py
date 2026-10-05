@@ -7,12 +7,15 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ofcore import (SYMBOLS, anchor_key, anchored_vwap, auction_read, cvd, ema, est_delta, gamma_levels, get_bars,
                     rvol, trading_day)
+from ofcore.feeds import FP_SYMBOLS
+
+from . import footprint_hub
 
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Orderflow Desk")
@@ -53,6 +56,24 @@ def _resets(df: pd.DataFrame, anchor: str) -> pd.Series:
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/footprint")
+def footprint_page():
+    return FileResponse(STATIC / "footprint.html")
+
+
+@app.get("/api/fp/symbols")
+def fp_symbols():
+    return [{"key": s.key, "name": s.name, "tick": s.tick, "row_ticks": s.row_ticks, "feed": s.feed}
+            for s in FP_SYMBOLS.values()]
+
+
+@app.websocket("/ws/footprint")
+async def ws_footprint(ws: WebSocket, sym: str = "ES", mode: str = "live", bar: int = 300, row: int = 0,
+                       ratio: float = 3.0, stack: int = 3):
+    row = row or (FP_SYMBOLS[sym].row_ticks if sym in FP_SYMBOLS else 1)
+    await footprint_hub.serve(ws, sym, mode, max(15, bar), max(1, row), ratio, max(2, stack))
 
 
 @app.get("/api/symbols")

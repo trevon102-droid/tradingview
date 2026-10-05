@@ -1,0 +1,36 @@
+body.fp { overflow: hidden; }
+a.brand { color: inherit; text-decoration: none; }
+.badge { padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--line); }
+.badge.live { background: rgba(38, 166, 154, .18); color: var(--up); }
+.badge.sim { background: rgba(245, 197, 66, .16); color: var(--gold); }
+.badge.bad { background: rgba(239, 83, 80, .18); color: var(--down); }
+.hint { font-size: 11px; margin-left: auto; }
+
+.fpgrid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: calc(100% - 49px); }
+.fpwrap { position: relative; min-width: 0; }
+#fp { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+.domwrap { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.domhead {
+  display: grid; grid-template-columns: 1fr 1fr 1.1fr 1fr 1fr; font-size: 11px; color: var(--muted);
+  text-align: center; padding: 6px 0 4px; border-bottom: 1px solid var(--line);
+}
+#dom { flex: 1 1 60%; min-height: 0; width: 100%; }
+.tapehead { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); padding: 6px 10px; border-top: 1px solid var(--line); }
+.tapehead input { width: 64px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+.tape { list-style: none; margin: 0; padding: 0 10px 8px; overflow-y: auto; flex: 0 0 32%; font-variant-numeric: tabular-nums; font-size: 12px; }
+.tape li { display: grid; grid-template-columns: 70px 1fr 1fr; padding: 1px 0; }
+.tape li span:nth-child(2), .tape li span:nth-child(3) { text-align: right; }
+.tape li.b { color: var(--up); } .tape li.s { color: var(--down); }
+.tape li.big { font-weight: 800; background: rgba(245, 197, 66, .08); }
+.tip {
+  position: absolute; pointer-events: none; z-index: 5; background: #0f141b; border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  body.fp { overflow: auto; }
+  .hint { display: none; }
+  .fpgrid { grid-template-columns: 1fr; height: auto; }
+  .fpwrap { height: 70vh; }
+  .domwrap { border-left: 0; border-top: 1px solid var(--line); height: 80vh; }
+}
