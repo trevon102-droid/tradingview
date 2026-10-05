@@ -7,6 +7,7 @@ back into the event definition or its context.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
@@ -56,7 +57,7 @@ def check_quality(dq: dict) -> dict:
 
 def write_jsonl(records: list[EventRecord], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
+    with (gzip.open(path, "wt") if path.suffix == ".gz" else path.open("w")) as f:
         for r in records:
             f.write(r.to_json() + "\n")
     return path
@@ -77,7 +78,9 @@ def append_jsonl(records: list[EventRecord], path: Path) -> Path:
 
 
 def read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    path = Path(path)
+    text = gzip.open(path, "rt").read() if path.suffix == ".gz" else path.read_text()
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
 def detector_version() -> str:

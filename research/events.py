@@ -64,7 +64,7 @@ def cmd_replay(symbols=SYMBOLS, tfs=EVENT_TFS, workers: int | None = None, chunk
                   flush=True)
     for (sym, tf), parts in results.items():
         recs = [r for _, rs in sorted(parts, key=lambda x: x[0]) for r in rs]
-        write_jsonl(recs, EVENTS_DIR / "replay" / f"{sym}_{tf}.jsonl")
+        write_jsonl(recs, EVENTS_DIR / "replay" / f"{sym}_{tf}.jsonl.gz")
         print(f"{sym} {tf}: {len(recs)} events")
 
 
@@ -104,7 +104,7 @@ def cmd_outcomes(symbols=SYMBOLS, tfs=EVENT_TFS, workers: int | None = None) -> 
     jobs = []
     for sym in symbols:
         for tf in tfs:
-            evs = read_jsonl(EVENTS_DIR / "replay" / f"{sym}_{tf}.jsonl")
+            evs = read_jsonl(EVENTS_DIR / "replay" / f"{sym}_{tf}.jsonl.gz")
             for i in range(0, len(evs), 2000):
                 jobs.append((sym, "event", evs[i:i + 2000]))
             base = _all_bar_pseudo_events(sym, tf)
@@ -129,7 +129,7 @@ def _baseline_frame(out: pd.DataFrame) -> pd.DataFrame:
 def cmd_study() -> dict:
     out = pd.read_csv(EVENTS_DIR / "outcomes.csv.gz")
     events = []
-    for p in sorted((EVENTS_DIR / "replay").glob("*.jsonl")):
+    for p in sorted((EVENTS_DIR / "replay").glob("*.jsonl.gz")):
         events += read_jsonl(p)
     bt = baseline_table(_baseline_frame(out))
     ev_out = out[out["kind"] == "event"].drop(columns=["symbol", "kind"])
@@ -187,7 +187,11 @@ def cmd_study() -> dict:
                    "oos": "both chronological halves must agree",
                    "tests_run": n_tests,
                    "expected_false_positives_at_5pct": round(0.05 * n_tests, 1),
-                   "note": "NQ/MNQ and ES/MES are the same markets: they are not independent confirmations"},
+                   "note": "NQ/MNQ and ES/MES are the same markets: they are not independent confirmations",
+                   "status_note": "MIXED vs WEAK: halves disagreeing by > 0.05 ATR counts as MIXED. That threshold is "
+                                  "small next to 4h noise, so most MIXED rows are noise too. Both mean: no reliable "
+                                  "evidence. Only PROMISING / INVALIDATED are claims, and with this many tests a few "
+                                  "of those are expected by chance."},
         "signals": rows, "combinations": combos,
     }
     (EVENTS_DIR / "scorecard.json").write_text(json.dumps(card, indent=2, default=_json))
@@ -277,7 +281,8 @@ def _report(card, details) -> str:
            + " (no point-in-time options history).", "", "## Combinations (pre-registered)", ""]
     for c in card["combinations"]:
         md.append(f"- **{c['name']}** {c.get('symbol', '')} {c.get('timeframe', '')}: n={c['sample_size']}, "
-                  f"edge={_fmt(c.get('edge_r_atr'))} ATR → **{c['status']}**. _{c['why']}_")
+                  f"edge={_fmt(c.get('edge_r_atr'))} ATR → **{c['status']}**")
+    md += ["", "Rationale: " + "; ".join(f"_{c['name']}_: {c['why']}" for c in COMBOS)]
     md += ["", "## Horizons and segments", ""]
     for key, d in details.items():
         if d["primary"].get("n", 0) < MIN_N:

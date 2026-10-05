@@ -6,3 +6,4 @@ __pycache__/
 scanner/.state.json
 data/*.csv
 data/market/
+data/research/events/outcomes.csv.gz
