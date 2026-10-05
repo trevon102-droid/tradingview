@@ -37,7 +37,7 @@ SYMBOLS: dict[str, Sym] = {s.key: s for s in [
     # metals, rates, dollar
     Sym("GC", "Gold", "GC=F", 0.1, "GLD", "future"),
     Sym("SI", "Silver", "SI=F", 0.005, "SLV", "future"),
-    Sym("DX", "US Dollar Index", "DX=F", 0.005, "UUP", "future"),
+    Sym("DX", "US Dollar Index", "DX-Y.NYB", 0.005, "UUP", "future"),  # Yahoo has no DX=F; ICE index, no volume
     Sym("ZN", "10Y T-Note", "ZN=F", 0.015625, None, "future"),
     Sym("ZB", "30Y T-Bond", "ZB=F", 0.03125, "TLT", "future"),
     Sym("RTY", "E-mini Russell 2000", "RTY=F", 0.1, "IWM", "future"),

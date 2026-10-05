@@ -21,6 +21,11 @@ import pandas as pd
 from .data import SYMBOLS
 
 RATE = 0.04
+MIN_T = 1 / 365  # ignore options inside a day of expiry: 0DTE gamma flips sign strike-to-strike at spot
+
+
+def structural(rows: list["OptRow"]) -> list["OptRow"]:
+    return [o for o in rows if o.t >= MIN_T]
 
 
 @dataclass
@@ -59,10 +64,12 @@ def total_gex_curve(rows: list[OptRow], spots: np.ndarray) -> np.ndarray:
 
 
 def zero_gamma(rows: list[OptRow], spot: float, width: float = 0.12) -> float | None:
-    """Price where net dealer gamma flips sign, closest to spot."""
+    """The gamma flip: where net dealer gamma goes from negative (below) to positive (above),
+    nearest to spot. Positive-to-negative crossings aren't a flip. Sub-1-day options are excluded."""
+    rows = structural(rows)
     spots = np.linspace(spot * (1 - width), spot * (1 + width), 241)
     curve = total_gex_curve(rows, spots)
-    flips = np.where(np.diff(np.sign(curve)) != 0)[0]
+    flips = np.where((curve[:-1] < 0) & (curve[1:] >= 0))[0]
     if len(flips) == 0:
         return None
     pts = [spots[i] - curve[i] * (spots[i + 1] - spots[i]) / (curve[i + 1] - curve[i]) for i in flips]
@@ -70,6 +77,7 @@ def zero_gamma(rows: list[OptRow], spot: float, width: float = 0.12) -> float | 
 
 
 def levels_from_chain(rows: list[OptRow], spot: float) -> dict:
+    rows = structural(rows)
     by = gex_by_strike(rows, spot)
     near = by[(by.index > spot * 0.85) & (by.index < spot * 1.15)]
     if near.empty:
@@ -101,7 +109,9 @@ def fetch_chain_yahoo(etf: str, max_expiries: int = 6, max_days: int = 45) -> tu
         days = (t_exp - now).total_seconds() / 86400
         if days > max_days:
             break
-        t = max(days, 0.25) / 365
+        if days < 1:
+            continue  # 0DTE: see MIN_T
+        t = days / 365
         ch = tk.option_chain(exp)
         for frame, is_call in ((ch.calls, True), (ch.puts, False)):
             for k, oi, iv in frame[["strike", "openInterest", "impliedVolatility"]].fillna(0).itertuples(index=False):

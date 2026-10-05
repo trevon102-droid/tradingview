@@ -122,3 +122,30 @@ def test_4h_buckets_stay_session_aligned_across_dst():
         assert row["volume"] == sub["volume"].sum()
         assert not ((sub.index.tz_convert("America/New_York").hour == 18) & (t.hour != 18)).any()
     assert four["volume"].sum() == h["volume"].sum()  # nothing dropped or double counted
+
+
+def _chain_with_0dte_noise():
+    """Structural flip near 95 (30-day puts heavy below, calls above) + 0DTE options alternating
+    put/call strike by strike right at spot 100, like real index ETF chains on expiry morning."""
+    rows = [OptRow(k, False, 4000, 0.2, 30 / 365) for k in range(84, 95)]
+    rows += [OptRow(k, True, 4000, 0.2, 30 / 365) for k in range(96, 112)]
+    for i, k in enumerate(np.arange(97, 103.01, 0.5)):
+        rows.append(OptRow(float(k), bool(i % 2), 6000, 0.15, 0.3 / 365))
+    return rows
+
+
+def test_zero_gamma_ignores_0dte_noise_at_spot():
+    """Regression (seen on real Yahoo chains): 0DTE gamma flips sign strike to strike at spot,
+    so the 'nearest crossing' always landed ~1 strike from price and the flip-cross fired everywhere."""
+    zg = zero_gamma(_chain_with_0dte_noise(), 100.0)
+    assert zg is not None and 93 < zg < 97, zg
+
+
+def test_zero_gamma_picks_negative_to_positive_crossing():
+    # below the flip dealers are short gamma (puts), above it long gamma (calls)
+    rows = [OptRow(k, False, 4000, 0.2, 30 / 365) for k in range(84, 95)]
+    rows += [OptRow(k, True, 4000, 0.2, 30 / 365) for k in range(96, 112)]
+    zg = zero_gamma(rows, 104.0)
+    assert 93 < zg < 97
+    from ofcore.gamma import total_gex_curve
+    assert total_gex_curve(rows, np.array([zg - 2]))[0] < 0 < total_gex_curve(rows, np.array([zg + 2]))[0]
