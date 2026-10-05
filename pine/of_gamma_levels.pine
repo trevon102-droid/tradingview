@@ -1,4 +1,3 @@
-// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // OF · Gamma Levels
 // Pine can't read options chains, so the dashboard / scanner computes dealer gamma from the ETF proxy
 // (SPY→ES, QQQ→NQ, GLD→GC, …), maps it to futures prices, and gives you a string to paste here:

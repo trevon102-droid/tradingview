@@ -1,4 +1,3 @@
-// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // OF · VWAPs + EMAs + RVOL
 // Weekly / monthly / quarterly anchored VWAPs with σ bands (clean breaks at each reset), EMA stack,
 // and RVOL candle highlighting. Works on FX feeds with no volume (falls back to TWAP).
