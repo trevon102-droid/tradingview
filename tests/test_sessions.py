@@ -78,3 +78,50 @@ def test_bar_label_uses_bar_close():
                             pd.Timestamp("2026-10-06 15:55", tz=ET).tz_convert("UTC"),
                             pd.Timestamp("2026-10-06 16:00", tz=ET).tz_convert("UTC")])
     assert list(S.bar_labels(idx, 300)) == ["ETH", "RTH", "RTH", "ETH"]
+
+
+def _bars(start_et: str, end_et: str, freq="5min", price=100.0):
+    idx = pd.date_range(pd.Timestamp(start_et, tz=ET), pd.Timestamp(end_et, tz=ET), freq=freq, inclusive="left")
+    n = len(idx)
+    import numpy as np
+    close = price + np.arange(n) * 0.25
+    return pd.DataFrame({"open": close, "high": close + 0.5, "low": close - 0.5, "close": close,
+                         "volume": np.full(n, 10.0)}, index=idx.tz_convert("UTC"))
+
+
+def test_rth_vwap_resets_at_open_and_freezes_after_close():
+    from ofcore.indicators import rth_vwap
+    df = _bars("2026-10-05 18:00", "2026-10-07 17:00")
+    rv = rth_vwap(df, 300)
+    et_idx = df.index.tz_convert(ET)
+    first_rth = (et_idx.strftime("%H:%M") == "09:30") & (et_idx.day == 6)
+    tp = (df.high + df.low + df.close) / 3
+    assert rv["vwap"][first_rth].iloc[0] == pytest.approx(tp[first_rth].iloc[0])      # reset at 09:30
+    assert rv["vwap"][(et_idx.day == 6) & (et_idx.hour < 9)].isna().all()             # no RTH yet
+    close_val = rv["vwap"][(et_idx.day == 6) & (et_idx.strftime("%H:%M") == "15:55")].iloc[0]
+    after = rv["vwap"][(et_idx.day == 6) & (et_idx.hour >= 16) | (et_idx.day == 7) & (et_idx.hour < 9)]
+    assert (after == close_val).all()                                                  # frozen overnight
+    second_open = (et_idx.day == 7) & (et_idx.strftime("%H:%M") == "09:30")
+    assert rv["vwap"][second_open].iloc[0] == pytest.approx(tp[second_open].iloc[0])  # next day resets
+    assert rv["in_rth"].sum() == 2 * 78                                                # 6.5h of 5m bars x 2
+
+
+def test_rth_vwap_across_dst_change():
+    from ofcore.indicators import rth_vwap
+    df = _bars("2026-10-30 08:00", "2026-11-02 17:00")
+    rv = rth_vwap(df, 300)
+    et_idx = df.index.tz_convert(ET)
+    rth_et = et_idx[rv["in_rth"].to_numpy()]
+    for d in (30, 2):  # Friday on EDT, Monday on EST: both 09:30-16:00 local
+        hours = rth_et[rth_et.day == d]
+        assert hours.min().strftime("%H:%M") == "09:30" and hours.max().strftime("%H:%M") == "15:55"
+
+
+def test_rth_vwap_is_point_in_time():
+    """Adding later bars must not change any earlier RTH VWAP value."""
+    from ofcore.indicators import rth_vwap
+    df = _bars("2026-10-05 18:00", "2026-10-07 17:00")
+    full = rth_vwap(df, 300)["vwap"]
+    for cut in (150, 230, 300, 400):
+        part = rth_vwap(df.iloc[:cut], 300)["vwap"]
+        pd.testing.assert_series_equal(part, full.iloc[:cut])

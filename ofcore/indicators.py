@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .data import ET
-from .sessions import cme_session_index
+from .sessions import cme_session_index, rth_session_key
 
 
 def is_daily(df: pd.DataFrame) -> bool:
@@ -56,8 +56,11 @@ def rvol(df: pd.DataFrame, n: int = 20) -> pd.Series:
     if is_daily(df):
         base = v.shift(1).rolling(n, min_periods=5).mean()
     else:
-        tod = df.index.tz_convert(ET).strftime("%H:%M")
-        base = v.groupby(tod).transform(lambda s: s.shift(1).rolling(n, min_periods=3).mean())
+        wall = df.index.tz_convert(ET)
+        tod = np.asarray(wall.hour * 60 + wall.minute)
+        prev = v.groupby(tod).shift(1)
+        base = (prev.groupby(tod).rolling(n, min_periods=3).mean()
+                .reset_index(level=0, drop=True).reindex(v.index))
     return (v / base.replace(0, np.nan)).rename("rvol")
 
 
@@ -79,3 +82,24 @@ def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     pc = df["close"].shift(1)
     tr = pd.concat([df["high"] - df["low"], (df["high"] - pc).abs(), (df["low"] - pc).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / n, adjust=False).mean()
+
+
+def rth_vwap(df: pd.DataFrame, bar_seconds: int) -> pd.DataFrame:
+    """RTH VWAP: resets at 09:30 ET, accumulates only on RTH bars, frozen after 16:00 ET.
+
+    Columns: vwap, sd, in_rth. Outside RTH, `vwap`/`sd` carry the most recent RTH session's final
+    value forward (already known at that time, so point-in-time safe); before the first RTH bar it's NaN."""
+    key = rth_session_key(df.index, bar_seconds)
+    in_rth = key.notna()
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    v = df["volume"].clip(lower=0).astype(float)
+    if v[in_rth].sum() == 0:
+        v = pd.Series(1.0, index=df.index)
+    sub = pd.DataFrame({"pv": tp * v, "pv2": tp * tp * v, "v": v, "k": key})[in_rth]
+    g = sub.groupby("k")
+    cv = g["v"].cumsum().replace(0, np.nan)
+    vw = g["pv"].cumsum() / cv
+    sd = np.sqrt((g["pv2"].cumsum() / cv - vw**2).clip(lower=0))
+    out = pd.DataFrame({"vwap": vw, "sd": sd}).reindex(df.index).ffill()
+    out["in_rth"] = in_rth.to_numpy()
+    return out

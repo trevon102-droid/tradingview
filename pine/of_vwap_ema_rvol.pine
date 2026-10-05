@@ -1,8 +1,19 @@
 // OF · VWAPs + EMAs + RVOL
-// Weekly / monthly / quarterly anchored VWAPs with σ bands (clean breaks at each reset), EMA stack,
-// and RVOL candle highlighting. Works on FX feeds with no volume (falls back to TWAP).
+// RTH VWAP (NY cash session) + weekly / monthly / quarterly anchored VWAPs with σ bands (clean breaks at
+// each reset), EMA stack, and RVOL candle highlighting. Works on FX feeds with no volume (falls back to TWAP).
+// RTH VWAP: resets on the first bar inside the session (default 09:30-16:00 America/New_York, DST-aware via
+// the IANA time zone), accumulates only during the session, and is frozen after the close. A bar counts as
+// RTH when it OPENS inside the session, so use a chart of 30m or lower for an exact 09:30 anchor
+// (on 1h CME bars the first RTH bar is 10:00).
 //@version=6
 indicator("OF · VWAPs + EMAs + RVOL", "OF VWAP", overlay = true)
+
+grpRth = "RTH VWAP (NY cash session)"
+showR   = input.bool(true, "RTH VWAP", group = grpRth, inline = "r")
+bandsR  = input.bool(false, "bands", group = grpRth, inline = "r")
+holdR   = input.bool(true, "Show frozen value after close", group = grpRth)
+rthSess = input.session("0930-1600", "Session", group = grpRth)
+rthTz   = input.string("America/New_York", "Time zone", group = grpRth)
 
 grpV = "Anchored VWAPs"
 showW  = input.bool(true, "Weekly", group = grpV, inline = "w")
@@ -42,6 +53,25 @@ f_avwap(bool reset, float src, float v) =>
     float vw = sPV / sV
     [vw, math.sqrt(math.max(sPV2 / sV - vw * vw, 0.0))]
 
+// RTH VWAP: reset at the first in-session bar, add only in session, hold the final value after the close
+inRth    = timeframe.isintraday and not na(time(timeframe.period, rthSess, rthTz))
+rthStart = inRth and not inRth[1]
+f_rthvwap(bool reset, bool add, float src, float v) =>
+    var float sPV  = 0.0
+    var float sPV2 = 0.0
+    var float sV   = 0.0
+    if reset
+        sPV  := 0.0
+        sPV2 := 0.0
+        sV   := 0.0
+    if add
+        sPV  += src * v
+        sPV2 += src * src * v
+        sV   += v
+    float vw = sV > 0 ? sPV / sV : na
+    [vw, sV > 0 ? math.sqrt(math.max(sPV2 / sV - vw * vw, 0.0)) : na]
+[rV, rS] = f_rthvwap(rthStart, inRth, hlc3, vol)
+
 rW = timeframe.change("W")
 rM = timeframe.change("M")
 rQ = timeframe.change("3M")
@@ -51,6 +81,12 @@ rQ = timeframe.change("3M")
 
 // na on the reset bar + linebr style = clean break instead of a vertical join
 br(bool on, bool reset, float x) => on and not reset ? x : na
+
+cR = #22d3ee
+plot(showR and inRth ? rV : na, "RTH VWAP", cR, 2, plot.style_linebr)
+plot(showR and bandsR and inRth ? rV + m1 * rS : na, "RTH VWAP +1", color.new(cR, 50), 1, plot.style_linebr)
+plot(showR and bandsR and inRth ? rV - m1 * rS : na, "RTH VWAP -1", color.new(cR, 50), 1, plot.style_linebr)
+plot(showR and holdR and not inRth ? rV : na, "RTH VWAP (frozen after close)", color.new(cR, 55), 1, plot.style_circles)
 
 cW = #f5c542
 cM = #b388ff
@@ -81,17 +117,23 @@ barcolor(rvColor and hot ? (close >= open ? #00e5ff : #ff9100) : na, title = "Hi
 stack = ema1 > ema2 and ema2 > ema3 ? "bull stack" : ema1 < ema2 and ema2 < ema3 ? "bear stack" : "mixed"
 sigmaW = wS > 0 ? (close - wV) / wS : 0.0
 
-var table t = table.new(position.bottom_right, 2, 3, bgcolor = color.new(#11151c, 10))
+var table t = table.new(position.bottom_right, 2, 6, bgcolor = color.new(#11151c, 10))
 if showTbl and barstate.islast
-    t.cell(0, 0, "RVOL", text_color = color.gray, text_size = size.small)
-    t.cell(1, 0, na(rvol) ? "—" : str.tostring(rvol, "#.00") + "x", text_color = hot ? color.orange : color.silver, text_size = size.small)
-    t.cell(0, 1, "vs wVWAP", text_color = color.gray, text_size = size.small)
-    t.cell(1, 1, (sigmaW >= 0 ? "+" : "") + str.tostring(sigmaW, "#.0") + "σ", text_color = sigmaW >= 0 ? #26a69a : #ef5350, text_size = size.small)
-    t.cell(0, 2, "EMAs", text_color = color.gray, text_size = size.small)
-    t.cell(1, 2, stack, text_color = stack == "bull stack" ? #26a69a : stack == "bear stack" ? #ef5350 : color.silver, text_size = size.small)
+    t.cell(0, 0, inRth ? "RTH VWAP" : "RTH VWAP (closed)", text_color = cR, text_size = size.small)
+    t.cell(1, 0, na(rV) ? "—" : str.tostring(rV, format.mintick), text_color = cR, text_size = size.small)
+    t.cell(0, 1, "Weekly VWAP", text_color = cW, text_size = size.small)
+    t.cell(1, 1, str.tostring(wV, format.mintick) + "  (" + (sigmaW >= 0 ? "+" : "") + str.tostring(sigmaW, "#.0") + "σ)", text_color = cW, text_size = size.small)
+    t.cell(0, 2, "Monthly VWAP", text_color = cM, text_size = size.small)
+    t.cell(1, 2, str.tostring(mV, format.mintick), text_color = cM, text_size = size.small)
+    t.cell(0, 3, "RVOL", text_color = color.gray, text_size = size.small)
+    t.cell(1, 3, na(rvol) ? "—" : str.tostring(rvol, "#.00") + "x", text_color = hot ? color.orange : color.silver, text_size = size.small)
+    t.cell(0, 4, "EMAs", text_color = color.gray, text_size = size.small)
+    t.cell(1, 4, stack, text_color = stack == "bull stack" ? #26a69a : stack == "bear stack" ? #ef5350 : color.silver, text_size = size.small)
 
+xR = ta.cross(close, rV)
 xW = ta.cross(close, wV)
 xM = ta.cross(close, mV)
-alertcondition(xW, "Weekly VWAP cross", "{{ticker}} crossed weekly VWAP")
-alertcondition(xM, "Monthly VWAP cross", "{{ticker}} crossed monthly VWAP")
-alertcondition(hot, "High RVOL", "{{ticker}} RVOL above threshold")
+alertcondition(xR and inRth and barstate.isconfirmed, "RTH VWAP cross", "{{ticker}} closed across RTH VWAP")
+alertcondition(xW and barstate.isconfirmed, "Weekly VWAP cross", "{{ticker}} closed across weekly VWAP")
+alertcondition(xM and barstate.isconfirmed, "Monthly VWAP cross", "{{ticker}} closed across monthly VWAP")
+alertcondition(hot and barstate.isconfirmed, "High RVOL", "{{ticker}} RVOL above threshold (confirmed bar)")

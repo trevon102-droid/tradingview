@@ -5,3 +5,4 @@ __pycache__/
 .env
 scanner/.state.json
 data/*.csv
+data/market/

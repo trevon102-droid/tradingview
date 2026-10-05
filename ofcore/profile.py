@@ -60,9 +60,15 @@ def build_profile(df: pd.DataFrame, bin_size: float, va_pct: float = 0.70) -> Pr
     vols = df["volume"].to_numpy(float)
     if vols.sum() == 0:  # spot FX: no volume, profile by time (TPO-ish)
         vols = np.ones(len(df))
-    for l, h, v in zip(df["low"].to_numpy(), df["high"].to_numpy(), vols):
-        a, b = math.floor(l / bin_size) - lo_all, math.floor(h / bin_size) - lo_all
-        vol[a:b + 1] += v / (b - a + 1)
+    # spread each bar's volume evenly over the bins its range touches (difference array, vectorized)
+    a = np.floor(df["low"].to_numpy() / bin_size).astype(np.int64) - lo_all
+    b = np.floor(df["high"].to_numpy() / bin_size).astype(np.int64) - lo_all
+    share = vols / (b - a + 1)
+    diff = np.zeros(nb + 1)
+    np.add.at(diff, a, share)
+    np.add.at(diff, b + 1, -share)
+    vol = np.cumsum(diff[:-1])
+    vol[np.abs(vol) < 1e-9 * max(vols.max(), 1)] = 0.0
     prices = (np.arange(nb) + lo_all) * bin_size
 
     poc_i = int(np.argmax(vol))
@@ -119,11 +125,12 @@ def session_profiles(df: pd.DataFrame, bin_size: float, va_pct: float = 0.70) ->
 def naked_pocs(df: pd.DataFrame, sessions: list[Profile]) -> list[dict]:
     """Prior-session POCs price hasn't traded back through yet — the classic swing magnets."""
     out = []
+    t = df.index.as_unit("ns").asi8
+    lo, hi = df["low"].to_numpy(), df["high"].to_numpy()
     for s in sessions[:-1]:
-        later = df[df.index > s.end]
-        if later.empty:
+        j = np.searchsorted(t, s.end.as_unit("ns").value, side="right")
+        if j >= len(t):
             continue
-        touched = ((later["low"] <= s.poc) & (later["high"] >= s.poc)).any()
-        if not touched:
+        if not ((lo[j:] <= s.poc) & (hi[j:] >= s.poc)).any():
             out.append({"price": _num(s.poc), "session": int(s.start.timestamp())})
     return out

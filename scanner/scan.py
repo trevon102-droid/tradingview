@@ -24,6 +24,7 @@ import requests
 import pandas as pd
 
 from ofcore import SYMBOLS, gamma_levels, get_bars
+from ofcore.gamma import freshness
 from ofcore.data import TF_MINUTES
 from ofcore.setups import Signal, Thresholds, closed_bars, events
 
@@ -57,13 +58,45 @@ def scan(cfg: dict) -> tuple[list[tuple[str, Signal]], list[dict]]:
             evs, a = events(key, df, SYMBOLS[key].tick, g, th, cfg.get("lookback_bars", 3))
             sigs = [s for _, s in evs]
             hits += evs
+            if cfg.get("log_events") and os.environ.get("OF_DATA", "yahoo") != "demo":
+                log_live_events(key, cfg["tf"], df, a, sigs, g, SYMBOLS[key].tick)
             rows.append({"key": key, "last": a["last"], "bias": a["bias"], "state": a["state"], "read": a["read"],
                          "rvol": a["rvol"], "signals": len(sigs), "pine": g["pine"] if g else None,
+                         "gamma_meta": (f"{g['proxy']}, calc {freshness(g)['calculated_et']}" if g else None),
                          "regime": g["regime"] if g else None})
         except Exception as e:
             print(f"{key}: {e}", file=sys.stderr)
             rows.append({"key": key, "error": str(e)})
     return hits, rows
+
+
+def log_live_events(sym: str, tf: str, df, a: dict, sigs: list, gamma: dict | None, tick: float) -> None:
+    """Persist each event as a point-in-time research record (data/research/events/live/<date>.jsonl)."""
+    from ofcore import auction_read
+    from research.marketdata import roll_window_mask
+    from research.records import EVENTS_DIR, append_jsonl, detector_version
+    from research.replay import BAR_SECONDS, build_record, causal_context
+
+    if not sigs or tf not in BAR_SECONDS:
+        return
+    bar_s = BAR_SECONDS[tf]
+    ohlcv = df[["open", "high", "low", "close", "volume"]]
+    ctx = causal_context(ohlcv, bar_s)
+    pos = {int(t.timestamp()): i for i, t in enumerate(df.index)}
+    price_bad = roll_window_mask(df.index)
+    vol_bad = (df["volume"] <= 0).to_numpy()
+    det = detector_version()
+    recs = []
+    for s in sigs:
+        i = pos.get(s.bar_time, len(df) - 1)
+        last = i == len(df) - 1
+        # an event from a lookback bar gets the auction read of data ending at ITS bar, and no gamma
+        # (the chain was fetched now, after that bar closed)
+        a_i = a if last else auction_read(ohlcv.iloc[:i + 1], tick)
+        recs.append(build_record(sym, tf, s, i, df, ctx, a_i, price_bad, vol_bad, "live:scanner", det, bar_s,
+                                 gamma if last else None))
+    day = df.index[-1].tz_convert("UTC").date().isoformat()
+    append_jsonl(recs, EVENTS_DIR / "live" / f"{day}.jsonl")
 
 
 def print_table(rows: list[dict], hits: list[tuple[str, Signal]]) -> None:
@@ -82,8 +115,9 @@ def print_table(rows: list[dict], hits: list[tuple[str, Signal]]) -> None:
     if pine:
         print("\nEstimated dealer gamma (ETF proxy, assumes dealers long calls/short puts)"
               " → paste into pine/of_gamma_levels.pine:")
+        meta = {r["key"]: r.get("gamma_meta") for r in rows}
         for k, p in pine:
-            print(f"  {k:<6} {p}")
+            print(f"  {k:<6} {p}   ({meta.get(k)})")
 
 
 def notify(signals: list[Signal]) -> None:
@@ -116,6 +150,7 @@ def _chunks(s: str, n: int):
 
 
 def run_once(cfg: dict, dry: bool) -> None:
+    cfg = {**cfg, "log_events": not dry and cfg.get("log_events", True)}
     hits, rows = scan(cfg)
     print_table(rows, hits)
     if dry:

@@ -175,9 +175,11 @@
     if (s && !s.gamma) { el.innerHTML = `<span class="muted">No liquid options proxy for ${state.sym}.</span>`; return; }
     if (!g) { el.innerHTML = `<span class="muted">loading options…</span>`; return; }
     if (g.error || g.unavailable) { el.innerHTML = `<span class="muted">${g.error || "unavailable"}</span>`; return; }
-    const reg = g.regime === "positive"
-      ? `<span class="chip long">+γ: mean revert</span>` : `<span class="chip short">−γ: trend / expand</span>`;
-    el.innerHTML = `<div class="chips">${reg}</div>
+    const reg = `<span class="chip">${g.regime_text || (g.regime === "positive" ? "Positive gamma regime (est.)" : "Negative gamma regime (est.)")}</span>`;
+    const stale = g.stale ? `<span class="chip short" title="Older than the freshness limit: levels may have moved">STALE</span>` : "";
+    const age = g.age_minutes == null ? "age unknown" : `${Math.round(g.age_minutes)} min old`;
+    el.innerHTML = `<div class="chips">${reg}${stale}</div>
+      <div class="muted" style="margin:-4px 0 8px">Proxy ${g.proxy} · calculated ${g.calculated_et || "?"} · ${age}</div>
       <dl class="gk">
         <dt>Zero gamma</dt><dd>${fmt(g.zero_gamma)}</dd>
         <dt>Call wall</dt><dd class="up">${fmt(g.call_wall)}</dd>

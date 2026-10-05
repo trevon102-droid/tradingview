@@ -1,4 +1,7 @@
 """DatabentoMerger against real databento_dbn record objects (no network / key needed)."""
+import json
+from datetime import date
+
 import pytest
 
 dbn = pytest.importorskip("databento_dbn")
@@ -98,7 +101,7 @@ def _session(records):
     return FakeLive
 
 
-def test_verify_script_clean_and_dirty(monkeypatch, capsys):
+def test_verify_script_clean_and_dirty(monkeypatch, capsys, tmp_path):
     pytest.importorskip("databento")
     import time
 
@@ -117,14 +120,58 @@ def test_verify_script_clean_and_dirty(monkeypatch, capsys):
     ]
     monkeypatch.setenv("DATABENTO_API_KEY", "x")
     monkeypatch.setattr(databento, "Live", _session(clean))
-    assert vd.main(["ES", "--minutes", "2"]) == 0
+    assert vd.main(["ES", "--minutes", "2", "--report-dir", str(tmp_path)]) == 0
     assert "CLEAN" in capsys.readouterr().out
+    rep = json.loads((tmp_path / "latest.json").read_text())["reports"][0]
+    assert rep["status"] == "clean" and rep["records"]["mbp_prints_matched"] == 2
 
     dirty = clean + [
         mbp(now + 3, book, action="T", side="B", px=5800.0, size=5, seq=99),   # no matching trades record
         mbp(now + 4, [(5800.25, 5800.0, 1, 1)]),                                 # crossed
     ]
     monkeypatch.setattr(databento, "Live", _session(dirty))
-    assert vd.main(["ES", "--minutes", "2"]) == 1
+    assert vd.main(["ES", "--minutes", "2", "--report-dir", str(tmp_path)]) == 1
     out = capsys.readouterr().out
     assert "mbp prints missing from trades" in out and "crossed" in out
+
+
+def test_verify_without_key_writes_not_run_reports(monkeypatch, tmp_path, capsys):
+    from ofcore import verify_databento as vd
+    monkeypatch.delenv("DATABENTO_API_KEY", raising=False)
+    assert vd.main(["--all", "--report-dir", str(tmp_path)]) == 3
+    doc = json.loads((tmp_path / "latest.json").read_text())
+    reps = {r["symbol"]: r for r in doc["reports"]}
+    assert set(reps) == {"NQ", "MNQ", "ES", "MES"}
+    for r in reps.values():
+        assert r["status"] == "not_run" and r["reason"] == "DATABENTO_API_KEY unavailable"
+        assert r["verified_at"] is None and r["checks"] == {} and "UNVERIFIED" in r["notes"][0]
+    assert len(list(tmp_path.glob("20*.json"))) == 1
+
+
+def test_expected_front_month_rolls_at_expiry():
+    from ofcore.verify_databento import expected_front
+    assert expected_front(date(2026, 9, 18), "NQ") == "NQU6"   # expiry day still September
+    assert expected_front(date(2026, 9, 19), "NQ") == "NQZ6"
+    assert expected_front(date(2026, 12, 20), "ES") == "ESH7"
+
+
+def _raw(**counts):
+    base = {"trades": 1000, "mbp": 50000, "books": 40000, "mbp_prints": 1000, "mbp_prints_matched": 1000}
+    base.update(counts)
+    return {"counts": base, "resolved": ["NQZ6"], "feed_symbol": "NQ.c.0"}
+
+
+def test_evaluate_thresholds_and_mapping():
+    from ofcore.verify_databento import evaluate
+    d = date(2026, 10, 5)
+    assert evaluate("NQ", 3, _raw(), d)["status"] == "clean"
+    assert evaluate("NQ", 3, _raw(prints_inside_spread=3), d)["status"] == "clean"       # within tolerance
+    assert evaluate("NQ", 3, _raw(prints_inside_spread=30), d)["status"] == "warning"
+    assert evaluate("NQ", 3, _raw(mbp_prints_missing=50), d)["status"] == "failed"
+    assert evaluate("NQ", 3, _raw(crossed_or_locked=1), d)["status"] == "warning"
+    bad_map = _raw()
+    bad_map["resolved"] = ["NQH7"]
+    r = evaluate("NQ", 3, bad_map, d)
+    assert r["status"] == "warning" and r["checks"]["contract_mapping"]["result"] == "mismatch"
+    empty = evaluate("NQ", 3, {"counts": {}, "resolved": [], "feed_symbol": "NQ.c.0"}, d)
+    assert empty["status"] == "failed"

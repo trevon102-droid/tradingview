@@ -21,6 +21,8 @@ import pandas as pd
 from .data import SYMBOLS
 
 RATE = 0.04
+STALE_MINUTES = 120  # options OI updates daily, but IV/spot move intraday: older than this is flagged STALE
+REGIME_TEXT = {"positive": "Positive gamma regime (est.)", "negative": "Negative gamma regime (est.)"}
 MIN_T = 1 / 365  # ignore options inside a day of expiry: 0DTE gamma flips sign strike-to-strike at spot
 
 
@@ -145,8 +147,10 @@ def gamma_levels(key: str, fut_price: float, provider: str | None = None) -> dic
     if provider == "demo":
         etf_spot = fut_price / {"SPY": 10, "QQQ": 40}.get(sym.gamma_proxy, 1)
         rows = demo_chain(etf_spot)
+        source = "demo (synthetic chain)"
     else:
         rows, etf_spot = fetch_chain_yahoo(sym.gamma_proxy)
+        source = "yahoo option chain (delayed), ETF proxy"
     if not rows:
         return None
     lv = levels_from_chain(rows, etf_spot)
@@ -161,12 +165,30 @@ def gamma_levels(key: str, fut_price: float, provider: str | None = None) -> dic
     }
     if lv["zero_gamma"] is not None:
         out["regime"] = "positive" if etf_spot > lv["zero_gamma"] else "negative"
+    now = pd.Timestamp.now(tz="UTC")
+    out.update({
+        "regime_text": REGIME_TEXT[out["regime"]],
+        "calculated_at": now.isoformat(), "calculated_ts": int(now.timestamp()),
+        "source": source, "estimated": True,
+        "expiries_days": sorted({round(o.t * 365, 1) for o in structural(rows)}),
+    })
     out["pine"] = pine_string(out)
     return out
 
 
+def freshness(g: dict, now: pd.Timestamp | None = None, stale_minutes: int = STALE_MINUTES) -> dict:
+    """Age of a gamma snapshot at read time. Always recompute at display time, never cache the age."""
+    now = now or pd.Timestamp.now(tz="UTC")
+    ts = g.get("calculated_ts")
+    if ts is None:
+        return {"age_minutes": None, "stale": True, "calculated_et": None}
+    age = (now.timestamp() - ts) / 60
+    et = pd.Timestamp(ts, unit="s", tz="UTC").tz_convert("America/New_York")
+    return {"age_minutes": round(age, 1), "stale": age > stale_minutes, "calculated_et": et.strftime("%H:%M ET")}
+
+
 def pine_string(g: dict) -> str:
-    """Paste-ready input for pine/gamma_levels.pine."""
+    """Paste-ready input for pine/of_gamma_levels.pine: zg;call;put;majors;proxy;calculated_unix"""
     zg = g["zero_gamma"] if g["zero_gamma"] is not None else 0
     majors = ",".join(f"{x:g}" for x in g["major_strikes"])
-    return f"{zg:g};{g['call_wall']:g};{g['put_wall']:g};{majors}"
+    return f"{zg:g};{g['call_wall']:g};{g['put_wall']:g};{majors};{g.get('proxy', '')};{g.get('calculated_ts', 0)}"

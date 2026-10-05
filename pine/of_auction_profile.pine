@@ -1,6 +1,10 @@
-// OF · Auction Profile
-// Composite volume profile (right edge), prior-session POC + value area, naked POCs that extend until
-// revisited, poor highs/lows, and RTH initial balance. Built for swing auction reads on futures + FX.
+// OF · Auction Profile (estimated volume profile)
+// Composite profile (right edge), prior-session POC + value area, naked POCs that extend until revisited,
+// possible poor highs/lows, developing POC/VA, and RTH initial balance.
+// ESTIMATED profile, not true volume-at-price: each chart bar's volume is spread evenly across every price
+// row its range touched. Real volume-at-price needs tick data. POC/VA are approximations of the real ones.
+// "Possible poor high/low" is a heuristic (the edge rows still carry heavy estimated volume). It is not the
+// TPO-based market-profile definition, so treat it as a prompt to look, not a confirmed poor extreme.
 //@version=6
 indicator("OF · Auction Profile", "OF Profile", overlay = true, max_boxes_count = 500, max_lines_count = 500,
      max_labels_count = 200, max_bars_back = 5000)
@@ -21,7 +25,7 @@ sessRows   = input.int(40, "Rows per session", minval = 10, maxval = 120, group 
 keepSess   = input.int(15, "Sessions to keep", minval = 1, maxval = 60, group = grpS)
 showNaked  = input.bool(true, "Extend naked POCs until revisited", group = grpS)
 maxNaked   = input.int(10, "Max naked POCs", minval = 1, maxval = 40, group = grpS)
-showPoor   = input.bool(true, "Flag poor highs / lows", group = grpS)
+showPoor   = input.bool(true, "Flag possible poor highs / lows (heuristic)", group = grpS)
 showDev    = input.bool(true, "Developing session POC / VA", group = grpS)
 
 grpI = "Initial balance (intraday)"
@@ -110,10 +114,10 @@ if newSess and sH.size() >= 3
             topV += bins.get(sessRows - 1 - k) / edge
             botV += bins.get(k) / edge
         if topV > 0.35 * pv
-            poorLbls.push(label.new(time[1], sH.max(), "poor high", xloc = xloc.bar_time, style = label.style_label_down,
+            poorLbls.push(label.new(time[1], sH.max(), "possible poor high", xloc = xloc.bar_time, style = label.style_label_down,
                  color = color.new(color.orange, 70), textcolor = color.orange, size = size.tiny))
         if botV > 0.35 * pv
-            poorLbls.push(label.new(time[1], sL.min(), "poor low", xloc = xloc.bar_time, style = label.style_label_up,
+            poorLbls.push(label.new(time[1], sL.min(), "possible poor low", xloc = xloc.bar_time, style = label.style_label_up,
                  color = color.new(color.orange, 70), textcolor = color.orange, size = size.tiny))
         while poorLbls.size() > keepSess * 2
             poorLbls.shift().delete()
@@ -133,10 +137,12 @@ if showNaked and nakedPx.size() > 0
     for i = nakedPx.size() - 1 to 0
         float px = nakedPx.get(i)
         line ln  = nakedLn.get(i)
-        if low <= px and high >= px and time > ln.get_x2()
-            ln.set_extend(extend.none)
-            ln.set_x2(time)
-            ln.set_color(color.new(cNaked, 70))
+        int x2 = na(ln) ? na : ln.get_x2()
+        if low <= px and high >= px and (na(x2) or time > x2)
+            if not na(ln)
+                ln.set_extend(extend.none)
+                ln.set_x2(time)
+                ln.set_color(color.new(cNaked, 70))
             nakedPx.remove(i)
             nakedLn.remove(i)
 
@@ -161,16 +167,21 @@ if showIB and timeframe.isintraday and timeframe.multiplier <= 60
         line.new(ibT, ibH, time, ibH, xloc = xloc.bar_time, color = cIB, width = 2)
         line.new(ibT, ibL, time, ibL, xloc = xloc.bar_time, color = cIB, width = 2)
     if newSess
-        ibHl.set_extend(extend.none)
-        ibLl.set_extend(extend.none)
-        ibHl.set_x2(time)
-        ibLl.set_x2(time)
+        if not na(ibHl)
+            ibHl.set_extend(extend.none)
+            ibHl.set_x2(time)
+        if not na(ibLl)
+            ibLl.set_extend(extend.none)
+            ibLl.set_x2(time)
 
 // ───────── composite + developing (drawn once, on the last bar) ─────────
 var array<box>  compBoxes = array.new_box()
+var label compLbl = na
 var array<line> lastLines = array.new_line()
 
 if barstate.islast
+    if not na(compLbl)
+        compLbl.delete()
     for b in compBoxes
         b.delete()
     compBoxes.clear()
@@ -198,6 +209,8 @@ if barstate.islast
                 compBoxes.push(box.new(x0, bot + (r + 1) * step, x0 + w, bot + r * step, bgcolor = c, border_color = na))
         float pocPx = bot + (poc + 0.5) * step
         lastLines.push(line.new(bar_index - n + 1, pocPx, x0 + compWidth, pocPx, color = cPoc, width = 1, style = line.style_dotted))
+        compLbl := label.new(x0, bot + compRows * step, "Est. volume profile · " + str.tostring(n) + " bars",
+             style = label.style_label_lower_left, color = color.new(#11151c, 20), textcolor = color.silver, size = size.tiny)
         lastLines.push(line.new(bar_index - n + 1, bot + (hi + 1) * step, x0 + compWidth, bot + (hi + 1) * step, color = color.new(#5b8cff, 30), style = line.style_dotted))
         lastLines.push(line.new(bar_index - n + 1, bot + lo * step, x0 + compWidth, bot + lo * step, color = color.new(#5b8cff, 30), style = line.style_dotted))
 

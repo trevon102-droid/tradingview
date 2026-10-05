@@ -17,6 +17,8 @@ class Signal:
     direction: str  # long | short | info
     text: str
     price: float
+    level: float | None = None  # the price level the setup refers to (VAH/VAL/POC/VWAP/gamma level)
+    bar_time: int | None = None  # unix open time of the bar it fired on (set by events())
 
     def key(self, bar_time: int) -> str:
         """One alert per setup *event*: the bar (unix sec) where it switched on."""
@@ -37,29 +39,29 @@ class Thresholds:
 def detect(sym: str, df: pd.DataFrame, a: dict, gamma: dict | None = None, th: Thresholds = Thresholds()) -> list[Signal]:
     out: list[Signal] = []
     px, atr = a["last"], a["atr"] or 1e-9
-    add = lambda code, d, t: out.append(Signal(sym, code, d, t, px))  # noqa: E731
+    add = lambda code, d, t, lvl=None: out.append(Signal(sym, code, d, t, px, lvl))  # noqa: E731
     bal = a["balance"]
 
     read = a["read"]
     if read == "accepted above value":
-        add("accept_above", "long", f"Accepted above value (VAH {bal['vah']:g}). Buy pullbacks into VAH.")
+        add("accept_above", "long", f"Accepted above value (VAH {bal['vah']:g}). Buy pullbacks into VAH.", bal["vah"])
     elif read == "accepted below value":
-        add("accept_below", "short", f"Accepted below value (VAL {bal['val']:g}). Sell rallies into VAL.")
+        add("accept_below", "short", f"Accepted below value (VAL {bal['val']:g}). Sell rallies into VAL.", bal["val"])
     elif read == "look above and fail":
-        add("lookabove_fail", "short", f"Look above and fail at {bal['vah']:g}. Targets POC {bal['poc']:g}, then VAL {bal['val']:g}.")
+        add("lookabove_fail", "short", f"Look above and fail at {bal['vah']:g}. Targets POC {bal['poc']:g}, then VAL {bal['val']:g}.", bal["vah"])
     elif read == "look below and fail":
-        add("lookbelow_fail", "long", f"Look below and fail at {bal['val']:g}. Targets POC {bal['poc']:g}, then VAH {bal['vah']:g}.")
+        add("lookbelow_fail", "long", f"Look below and fail at {bal['val']:g}. Targets POC {bal['poc']:g}, then VAH {bal['vah']:g}.", bal["val"])
 
     if a["state"] == "balance":
         if abs(px - bal["vah"]) <= th.edge_atr * atr:
-            add("balance_edge_high", "short", f"At balance high {bal['vah']:g}. Fade unless it gets accepted.")
+            add("balance_edge_high", "short", f"At balance high {bal['vah']:g}. Fade unless it gets accepted.", bal["vah"])
         elif abs(px - bal["val"]) <= th.edge_atr * atr:
-            add("balance_edge_low", "long", f"At balance low {bal['val']:g}. Fade unless it gets accepted.")
+            add("balance_edge_low", "long", f"At balance low {bal['val']:g}. Fade unless it gets accepted.", bal["val"])
 
     for n in a["naked_pocs"]:
         if abs(px - n["price"]) <= th.npoc_atr * atr:
             d = "short" if n["price"] > px else "long"
-            add("naked_poc", "info", f"Within {th.npoc_atr} ATR of naked POC {n['price']:g} (magnet / reaction zone, {d} side).")
+            add("naked_poc", "info", f"Within {th.npoc_atr} ATR of naked POC {n['price']:g} (magnet / reaction zone, {d} side).", n["price"])
             break
 
     if a["divergence"]:
@@ -74,9 +76,9 @@ def detect(sym: str, df: pd.DataFrame, a: dict, gamma: dict | None = None, th: T
     e21, e50 = ema(df["close"], 21), ema(df["close"], 50)
     last = df.iloc[-1]
     if e21.iloc[-1] > e50.iloc[-1] and last["low"] <= wv.iloc[-1] < last["close"]:
-        add("vwap_pullback_long", "long", f"Uptrend pullback held weekly VWAP {wv.iloc[-1]:.6g}.")
+        add("vwap_pullback_long", "long", f"Uptrend pullback held weekly VWAP {wv.iloc[-1]:.6g}.", float(wv.iloc[-1]))
     elif e21.iloc[-1] < e50.iloc[-1] and last["high"] >= wv.iloc[-1] > last["close"]:
-        add("vwap_pullback_short", "short", f"Downtrend rally rejected weekly VWAP {wv.iloc[-1]:.6g}.")
+        add("vwap_pullback_short", "short", f"Downtrend rally rejected weekly VWAP {wv.iloc[-1]:.6g}.", float(wv.iloc[-1]))
 
     if gamma:
         out += detect_gamma(sym, df, a, gamma, th)
@@ -95,15 +97,15 @@ def detect_gamma(sym: str, df: pd.DataFrame, a: dict, gamma: dict, th: Threshold
         prev = float(df["close"].iloc[-2])
         if (prev - zg) * (px - zg) < 0:
             regime = "negative γ, so expect expansion" if px < zg else "positive γ, so expect mean reversion"
-            out.append(Signal(sym, "gamma_flip_cross", "info", f"Crossed est. zero gamma {zg:g} ({regime}).", px))
+            out.append(Signal(sym, "gamma_flip_cross", "info", f"Crossed est. zero gamma {zg:g} ({regime}).", px, zg))
         elif abs(px - zg) <= th.gamma_atr * atr:
             out.append(Signal(sym, "gamma_flip_near", "info",
-                              f"Sitting on est. zero gamma {zg:g}. Vol regime can flip here.", px))
+                              f"Sitting on est. zero gamma {zg:g}. Vol regime can flip here.", px, zg))
     for name in ("call_wall", "put_wall"):
         lvl = gamma.get(name)
         if lvl and abs(px - lvl) <= th.gamma_atr * atr:
             out.append(Signal(sym, name, "info",
-                              f"At est. {name.replace('_', ' ')} {lvl:g}. Dealer hedging tends to pin/reject here.", px))
+                              f"At est. {name.replace('_', ' ')} {lvl:g}. Dealer hedging tends to pin/reject here.", px, lvl))
     return out
 
 
@@ -141,8 +143,12 @@ def events(sym: str, df: pd.DataFrame, tick: float, gamma: dict | None = None, t
     for k in range(lookback):
         bar_t = int(df.index[len(df) - 1 - k].timestamp())
         for code in states[k].keys() - states[k + 1].keys():
+            states[k][code].bar_time = bar_t
             out.append((states[k][code].key(bar_t), states[k][code]))
     if gamma:
         bar_t = int(df.index[-1].timestamp())
-        out = [(_gamma_key(s, bar_t, gamma), s) for s in detect_gamma(sym, df, reads[0], gamma, th)] + out
+        gsigs = detect_gamma(sym, df, reads[0], gamma, th)
+        for s in gsigs:
+            s.bar_time = bar_t
+        out = [(_gamma_key(s, bar_t, gamma), s) for s in gsigs] + out
     return out, reads[0]

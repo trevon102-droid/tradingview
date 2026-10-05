@@ -1,7 +1,8 @@
 # Runs the scanner on GitHub's runners on a schedule, so your machine doesn't need to be on.
 # Needs repo secret DISCORD_WEBHOOK_URL (and/or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID).
-# Alert memory (scanner/.state.json) lives on its own `scanner-state` branch: one small JSON file,
-# force-updated each run. If it's ever lost, only setups from the last few bars can re-alert.
+# Alert memory (scanner/.state.json) and the live research event log (data/research/events/live/*.jsonl)
+# live on their own `scanner-state` branch, force-updated each run. If the state is ever lost, only setups
+# from the last few bars can re-alert; the event log is append-only and restored before every scan.
 name: OF scanner
 
 on:
@@ -32,6 +33,11 @@ jobs:
           if git fetch --depth=1 origin scanner-state 2>/dev/null; then
             git show FETCH_HEAD:state.json > scanner/.state.json
             echo "loaded $(python -c 'import json;print(len(json.load(open("scanner/.state.json"))))') keys"
+            mkdir -p data/research/events/live
+            for f in $(git ls-tree --name-only FETCH_HEAD events/ 2>/dev/null); do
+              git show "FETCH_HEAD:$f" > "data/research/events/live/$(basename "$f")"
+            done
+            echo "restored $(ls data/research/events/live | wc -l) live event files"
           else
             echo "no saved state yet"
           fi
@@ -48,7 +54,12 @@ jobs:
         run: |
           git config user.name "of-scanner"
           git config user.email "of-scanner@users.noreply.github.com"
-          blob=$(git hash-object -w scanner/.state.json)
-          tree=$(printf '100644 blob %s\tstate.json\n' "$blob" | git mktree)
+          entries=$(printf '100644 blob %s\tstate.json\n' "$(git hash-object -w scanner/.state.json)")
+          if ls data/research/events/live/*.jsonl >/dev/null 2>&1; then
+            sub=$(for f in data/research/events/live/*.jsonl; do
+                    printf '100644 blob %s\t%s\n' "$(git hash-object -w "$f")" "$(basename "$f")"; done | git mktree)
+            entries="$entries"$'\n'"$(printf '040000 tree %s\tevents' "$sub")"
+          fi
+          tree=$(printf '%s\n' "$entries" | git mktree)
           commit=$(git commit-tree "$tree" -m "scanner state $(date -u +%FT%TZ)")
           git push --force origin "$commit:refs/heads/scanner-state"

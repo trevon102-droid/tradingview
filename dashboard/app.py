@@ -153,7 +153,10 @@ def gamma(sym: str = Query("ES", max_length=12)):
         g = cached(("gamma", sym), 900, lambda: gamma_levels(sym, float(df["close"].iloc[-1])))
     except Exception as e:
         raise HTTPException(502, f"options data error: {e}") from e
-    return g or {"unavailable": True}
+    if not g:
+        return {"unavailable": True}
+    from ofcore.gamma import freshness
+    return {**g, **freshness(g)}
 
 
 @app.get("/api/watchlist")

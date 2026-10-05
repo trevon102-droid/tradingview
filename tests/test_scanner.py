@@ -148,3 +148,34 @@ def test_gamma_state_keyed_by_level_not_bar():
     g2 = {**g, "zero_gamma": lvl + 0.25}
     k3 = [k for k, s in setups.events("ES", df, 0.25, g2)[0] if s.code == "gamma_flip_near"]
     assert k3 and k3 != k1  # options data moved the level -> new alert
+
+
+def test_live_event_log_is_point_in_time(tmp_path, monkeypatch):
+    import json
+
+    import research.records as rec
+    from ofcore import SYMBOLS, auction_read
+    from ofcore.setups import events
+    from scanner.scan import log_live_events
+
+    monkeypatch.setattr(rec, "EVENTS_DIR", tmp_path)
+    df = get_bars("ES", "1h", 30)
+    g = {"zero_gamma": float(df["close"].iloc[-1]) + 1000, "call_wall": None, "put_wall": None, "regime": "negative",
+         "proxy": "SPY", "calculated_at": "2026-10-05T14:00:00+00:00", "source": "test"}
+    evs, a = events("ES", df, 0.25, g, lookback=3)
+    sigs = [s for _, s in evs]
+    assert sigs
+    log_live_events("ES", "1h", df, a, sigs, g, SYMBOLS["ES"].tick)
+    log_live_events("ES", "1h", df, a, sigs, g, SYMBOLS["ES"].tick)   # idempotent
+    rows = [json.loads(x) for f in tmp_path.glob("live/*.jsonl") for x in f.read_text().splitlines()]
+    assert len(rows) == len({r["event_id"] for r in rows}) == len(sigs)
+    last_bar = int(df.index[-1].timestamp())
+    pos = {int(t.timestamp()): i for i, t in enumerate(df.index)}
+    for r in rows:
+        assert r["source"] == "live:scanner" and r["data_quality"]["delta"] == "estimated"
+        if r["bar_open"] == last_bar:
+            assert r["data_quality"]["gamma"] == "estimated" and r["context"]["gamma"]["proxy"] == "SPY"
+        else:   # lookback-bar events: no gamma, and the auction read of data ending at their own bar
+            assert r["data_quality"]["gamma"] == "unavailable" and r["context"]["gamma_regime"] is None
+            own = auction_read(df.iloc[:pos[r["bar_open"]] + 1], 0.25)
+            assert r["context"]["auction_read"] == own["read"] and r["context"]["auction_state"] == own["state"]

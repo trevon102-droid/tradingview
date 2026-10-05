@@ -149,3 +149,32 @@ def test_zero_gamma_picks_negative_to_positive_crossing():
     assert 93 < zg < 97
     from ofcore.gamma import total_gex_curve
     assert total_gex_curve(rows, np.array([zg - 2]))[0] < 0 < total_gex_curve(rows, np.array([zg + 2]))[0]
+
+
+def test_vectorized_profile_matches_reference_loop():
+    import math
+    df = get_bars("NQ", "1h", 30, provider="demo")
+    bs = auto_bin_size(df, 0.25)
+    p = build_profile(df, bs)
+    lo_all = math.floor(df["low"].min() / bs)
+    ref = np.zeros(len(p.volume))
+    for l, h, v in zip(df["low"], df["high"], df["volume"]):
+        a, b = math.floor(l / bs) - lo_all, math.floor(h / bs) - lo_all
+        ref[a:b + 1] += v / (b - a + 1)
+    assert np.allclose(p.volume, ref, rtol=1e-9, atol=1e-6)
+
+
+def test_gamma_snapshot_carries_freshness_and_neutral_regime():
+    import pandas as pd
+    from ofcore.gamma import REGIME_TEXT, freshness, gamma_levels
+    g = gamma_levels("ES", 5800.0, provider="demo")
+    assert g["proxy"] == "SPY" and g["estimated"] is True and "calculated_ts" in g and g["source"]
+    assert g["regime_text"] in REGIME_TEXT.values()
+    assert not any(w in g["regime_text"].lower() for w in ("mean-revert", "pin", "trend", "expansion"))
+    now = pd.Timestamp(g["calculated_ts"], unit="s", tz="UTC")
+    f0 = freshness(g, now + pd.Timedelta(minutes=37))
+    assert f0["age_minutes"] == 37.0 and f0["stale"] is False and f0["calculated_et"].endswith("ET")
+    assert freshness(g, now + pd.Timedelta(minutes=121))["stale"] is True
+    assert freshness({}, now)["stale"] is True          # unknown age is never treated as fresh
+    parts = g["pine"].split(";")
+    assert len(parts) == 6 and parts[4] == "SPY" and int(parts[5]) == g["calculated_ts"]

@@ -1,9 +1,12 @@
-// OF · Delta / CVD
-// Bar delta + cumulative volume delta built from lower-timeframe intrabars (up-close intrabar = buying,
-// down-close = selling). Closer to real footprint delta than chart-bar estimates, especially on 1h+ charts.
-// Flags CVD divergences and absorption (big delta that price refuses to follow).
+// OF · Est. Delta / Est. CVD
+// ESTIMATED delta, NOT bid/ask delta. Each lower-timeframe intrabar's whole volume is counted as buying if
+// it closed up and selling if it closed down. Real delta needs every trade's aggressor side (a footprint).
+// When intrabars aren't available the script falls back to a cruder close-location estimate; those bars are
+// drawn gray and the readout says so. The two sources are never mixed silently.
+// Divergences are pivot-based: a pivot is only known `pivot length` bars later, so markers sit on the bar
+// where the divergence was CONFIRMED (optionally back-shifted to the pivot, clearly labeled).
 //@version=6
-indicator("OF · Delta / CVD", "OF Delta", overlay = false, format = format.volume, max_labels_count = 200)
+indicator("OF · Est. Delta / Est. CVD", "OF Est Δ", overlay = false, format = format.volume, max_labels_count = 200)
 
 ltfIn     = input.timeframe("", "Intrabar timeframe", tooltip = "Blank = auto (5m on 1h+, 30m on daily, 4h on weekly)")
 display   = input.string("CVD candles", "Display", options = ["CVD candles", "CVD line", "Delta bars"])
@@ -11,7 +14,10 @@ resetOn   = input.string("Week", "CVD reset", options = ["Session", "Week", "Mon
 pivLen    = input.int(5, "Divergence pivot length", minval = 2, maxval = 30)
 absMult   = input.float(2.0, "Absorption: |delta| ≥ x × avg", minval = 1.0, step = 0.25)
 absLen    = input.int(20, "Absorption avg length", minval = 5)
+confOnly  = input.bool(true, "Confirmed signals only", tooltip = "Alerts fire only on closed bars. The developing bar is still displayed.")
+atPivot   = input.bool(false, "Draw divergence at the pivot (back-shifted)", tooltip = "Off: marker on the bar where the divergence became known. On: marker moved back to the pivot, labeled with the delay.")
 cUp       = input.color(#26a69a, "Up")
+cFb       = input.color(color.new(#9aa4b2, 20), "Fallback-estimate bars")
 cDn       = input.color(#ef5350, "Down")
 
 autoLtf = timeframe.isweekly or timeframe.ismonthly ? "240" : timeframe.isdaily ? "30" :
@@ -62,14 +68,21 @@ else
 
 delta = buyV - sellV
 cum := base + delta
+fallback = n == 0
+// track whether the CVD run since its last reset mixes intrabar and fallback sources
+var bool mixed = false
+var int fbCount = 0
+mixed := (resetNow ? false : mixed) or (not resetNow and bar_index > 0 and fallback != fallback[1])
+fbCount += fallback ? 1 : 0
 deltaPct = buyV + sellV > 0 ? delta / (buyV + sellV) * 100 : 0.0
 
 // ───────── plots ─────────
 isCandle = display == "CVD candles"
-plotcandle(isCandle ? base : na, isCandle ? runHi : na, isCandle ? runLo : na, isCandle ? cum : na, "CVD",
-     color = cum >= base ? cUp : cDn, wickcolor = color.new(color.gray, 30), bordercolor = cum >= base ? cUp : cDn)
-plot(display == "CVD line" ? cum : na, "CVD line", color = #5b8cff, linewidth = 2)
-plot(display == "Delta bars" ? delta : na, "Delta", style = plot.style_columns, color = delta >= 0 ? cUp : cDn)
+cBar = fallback ? cFb : cum >= base ? cUp : cDn
+plotcandle(isCandle ? base : na, isCandle ? runHi : na, isCandle ? runLo : na, isCandle ? cum : na, "EST. CVD",
+     color = cBar, wickcolor = color.new(color.gray, 30), bordercolor = cBar)
+plot(display == "CVD line" ? cum : na, "EST. CVD line", color = #5b8cff, linewidth = 2)
+plot(display == "Delta bars" ? delta : na, "EST. DELTA", style = plot.style_columns, color = fallback ? cFb : delta >= 0 ? cUp : cDn)
 hline(0, "Zero", color = color.new(color.gray, 70))
 
 // ───────── divergences (pivot-to-pivot price vs CVD) ─────────
@@ -91,8 +104,11 @@ if not na(pl)
     bullDiv := not na(lastPl) and pl < lastPl and cAt > lastPlCvd
     lastPl := pl
     lastPlCvd := cAt
-plotshape(bearDiv, "Bearish CVD divergence", shape.triangledown, location.top, cDn, offset = -pivLen, size = size.tiny, text = "div")
-plotshape(bullDiv, "Bullish CVD divergence", shape.triangleup, location.bottom, cUp, offset = -pivLen, size = size.tiny, text = "div")
+// default: marker on the bar where the divergence became known. Optional: back-shifted to the pivot, labeled "late".
+plotshape(bearDiv and not atPivot, "Bearish est. CVD divergence (at confirmation)", shape.triangledown, location.top, cDn, size = size.tiny, text = "div ✓")
+plotshape(bullDiv and not atPivot, "Bullish est. CVD divergence (at confirmation)", shape.triangleup, location.bottom, cUp, size = size.tiny, text = "div ✓")
+plotshape(bearDiv and atPivot, "Bearish est. CVD divergence (back-shifted to pivot)", shape.triangledown, location.top, cDn, offset = -pivLen, size = size.tiny, text = "div@pivot (known later)")
+plotshape(bullDiv and atPivot, "Bullish est. CVD divergence (back-shifted to pivot)", shape.triangleup, location.bottom, cUp, offset = -pivLen, size = size.tiny, text = "div@pivot (known later)")
 
 // ───────── absorption: aggressive flow that price won't follow ─────────
 avgAbs = ta.sma(math.abs(delta), absLen)
@@ -103,16 +119,22 @@ plotshape(absorbSell, "Sell absorption", shape.xcross, location.top, color.orang
 plotshape(absorbBuy, "Buy absorption", shape.xcross, location.bottom, color.aqua, size = size.tiny)
 
 // ───────── readout ─────────
-var table t = table.new(position.top_right, 2, 3, bgcolor = color.new(#11151c, 10), border_width = 0)
+var table t = table.new(position.top_right, 2, 5, bgcolor = color.new(#11151c, 10), border_width = 0)
 if barstate.islast
-    t.cell(0, 0, "Δ", text_color = color.gray, text_size = size.small)
+    t.cell(0, 0, "EST. DELTA", text_color = color.gray, text_size = size.small)
     t.cell(1, 0, str.tostring(delta, format.volume), text_color = delta >= 0 ? cUp : cDn, text_size = size.small)
-    t.cell(0, 1, "Δ%", text_color = color.gray, text_size = size.small)
+    t.cell(0, 1, "Est. Δ%", text_color = color.gray, text_size = size.small)
     t.cell(1, 1, str.tostring(deltaPct, "#.0") + "%", text_color = delta >= 0 ? cUp : cDn, text_size = size.small)
-    t.cell(0, 2, "intrabars", text_color = color.gray, text_size = size.small)
-    t.cell(1, 2, n > 0 ? ltf + " × " + str.tostring(n) : "est.", text_color = color.gray, text_size = size.small)
+    t.cell(0, 2, "Source", text_color = color.gray, text_size = size.small)
+    t.cell(1, 2, fallback ? "fallback estimate" : "estimated intrabar (" + ltf + " × " + str.tostring(n) + ")",
+         text_color = fallback ? color.orange : color.silver, text_size = size.small)
+    t.cell(0, 3, "EST. CVD run", text_color = color.gray, text_size = size.small)
+    t.cell(1, 3, mixed ? "MIXED sources since reset" : "single source", text_color = mixed ? color.orange : color.silver, text_size = size.small)
+    t.cell(0, 4, "Fallback bars", text_color = color.gray, text_size = size.small)
+    t.cell(1, 4, str.tostring(fbCount) + " of " + str.tostring(bar_index + 1), text_color = color.silver, text_size = size.small)
 
-alertcondition(bearDiv, "Bearish CVD divergence", "{{ticker}}: price HH, CVD LH")
-alertcondition(bullDiv, "Bullish CVD divergence", "{{ticker}}: price LL, CVD HL")
-alertcondition(absorbSell, "Sell absorption", "{{ticker}}: big buy delta absorbed")
-alertcondition(absorbBuy, "Buy absorption", "{{ticker}}: big sell delta absorbed")
+ok = not confOnly or barstate.isconfirmed
+alertcondition(bearDiv and ok, "Bearish est. CVD divergence", "{{ticker}}: price HH, est. CVD LH (confirmed after pivot lookback)")
+alertcondition(bullDiv and ok, "Bullish est. CVD divergence", "{{ticker}}: price LL, est. CVD HL (confirmed after pivot lookback)")
+alertcondition(absorbSell and ok, "Sell absorption (est.)", "{{ticker}}: big est. buy delta that price didn't follow")
+alertcondition(absorbBuy and ok, "Buy absorption (est.)", "{{ticker}}: big est. sell delta that price didn't follow")
