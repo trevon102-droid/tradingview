@@ -23,24 +23,34 @@ class Sym:
     yahoo: str
     tick: float
     gamma_proxy: str | None  # optionable ETF whose dealer gamma we map onto this market
-    kind: str  # "future" | "fx"
+    kind: str  # "future" | "fx" | "crypto"
 
 
 SYMBOLS: dict[str, Sym] = {s.key: s for s in [
+    # core (your red list on TradingView)
     Sym("ES", "E-mini S&P 500", "ES=F", 0.25, "SPY", "future"),
     Sym("NQ", "E-mini Nasdaq 100", "NQ=F", 0.25, "QQQ", "future"),
+    Sym("MNQ", "Micro Nasdaq 100", "MNQ=F", 0.25, "QQQ", "future"),
+    Sym("MES", "Micro S&P 500", "MES=F", 0.25, "SPY", "future"),
     Sym("YM", "E-mini Dow", "YM=F", 1.0, "DIA", "future"),
-    Sym("RTY", "E-mini Russell 2000", "RTY=F", 0.1, "IWM", "future"),
     Sym("CL", "Crude Oil", "CL=F", 0.01, "USO", "future"),
+    # metals, rates, dollar
     Sym("GC", "Gold", "GC=F", 0.1, "GLD", "future"),
     Sym("SI", "Silver", "SI=F", 0.005, "SLV", "future"),
+    Sym("DX", "US Dollar Index", "DX=F", 0.005, "UUP", "future"),
     Sym("ZN", "10Y T-Note", "ZN=F", 0.015625, None, "future"),
+    Sym("ZB", "30Y T-Bond", "ZB=F", 0.03125, "TLT", "future"),
+    Sym("RTY", "E-mini Russell 2000", "RTY=F", 0.1, "IWM", "future"),
+    # FX
+    Sym("USDJPY", "USD/JPY", "JPY=X", 0.001, None, "fx"),
+    Sym("6J", "Japanese Yen", "6J=F", 0.0000005, "FXY", "future"),
     Sym("6E", "Euro FX", "6E=F", 0.00005, "FXE", "future"),
     Sym("6B", "British Pound", "6B=F", 0.0001, "FXB", "future"),
-    Sym("6J", "Japanese Yen", "6J=F", 0.0000005, "FXY", "future"),
     Sym("EURUSD", "EUR/USD", "EURUSD=X", 0.00001, "FXE", "fx"),
     Sym("GBPUSD", "GBP/USD", "GBPUSD=X", 0.00001, "FXB", "fx"),
-    Sym("USDJPY", "USD/JPY", "JPY=X", 0.001, None, "fx"),
+    # crypto (gamma via the spot ETFs' options)
+    Sym("BTC", "Bitcoin", "BTC-USD", 0.01, "IBIT", "crypto"),
+    Sym("ETH", "Ethereum", "ETH-USD", 0.01, "ETHA", "crypto"),
 ]}
 
 TF_MINUTES = {"1h": 60, "4h": 240, "1d": 1440}
@@ -105,8 +115,9 @@ def _csv_bars(sym: Sym, tf: str) -> pd.DataFrame:
 
 # --- demo data: seeded random walk with an intraday volume smile, so everything runs offline ---
 
-_DEMO_PRICE = {"ES": 5800, "NQ": 20500, "YM": 42500, "RTY": 2250, "CL": 72, "GC": 2650, "SI": 31,
-               "ZN": 111, "6E": 1.09, "6B": 1.30, "6J": 0.0068, "EURUSD": 1.09, "GBPUSD": 1.30, "USDJPY": 148}
+_DEMO_PRICE = {"ES": 5800, "MES": 5800, "NQ": 20500, "MNQ": 20500, "YM": 42500, "RTY": 2250, "CL": 72,
+               "GC": 2650, "SI": 31, "DX": 101, "ZN": 111, "ZB": 116, "6E": 1.09, "6B": 1.30, "6J": 0.0068,
+               "EURUSD": 1.09, "GBPUSD": 1.30, "USDJPY": 148, "BTC": 98000, "ETH": 3400}
 
 
 def _daily(df: pd.DataFrame) -> pd.DataFrame:

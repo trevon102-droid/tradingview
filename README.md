@@ -63,7 +63,7 @@ python -m scanner.scan --symbols ES,NQ,6E --tf 4h
 ```
 
 Set `DISCORD_WEBHOOK_URL` and/or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. Tune `scanner/config.toml`.
-Want it running 24/5 without your machine? See `scanner/github-workflow.example.yml`.
+It also runs on GitHub every 2h (Sun–Fri) via `.github/workflows/scanner.yml`. Just add the `DISCORD_WEBHOOK_URL` repo secret.
 
 **Setups it flags**
 
@@ -97,6 +97,6 @@ Each scan also prints Pine-ready gamma strings per market.
 ofcore/      engine: data, indicators, profile, auction read, gamma, setups
 dashboard/   FastAPI + static frontend (lightweight-charts vendored, Apache-2.0)
 pine/        TradingView indicators
-scanner/     CLI scanner + config + GH Actions template
+scanner/     CLI scanner + config (scheduled run: .github/workflows/scanner.yml)
 tests/       pytest (runs on demo data, no network)
 ```

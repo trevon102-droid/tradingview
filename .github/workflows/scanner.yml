@@ -1,6 +1,4 @@
 # Run the scanner on GitHub's runners on a schedule, so your machine doesn't need to be on.
-# To enable: copy to .github/workflows/scanner.yml, then add repo secrets
-#   DISCORD_WEBHOOK_URL   and/or   TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
 name: OF scanner
 
 on:

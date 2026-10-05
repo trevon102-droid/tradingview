@@ -133,7 +133,7 @@ def gamma_levels(key: str, fut_price: float, provider: str | None = None) -> dic
         return None
     provider = provider or os.environ.get("OF_DATA", "yahoo")
     if provider == "demo":
-        etf_spot = fut_price / 10 if key == "ES" else fut_price / 40 if key == "NQ" else fut_price
+        etf_spot = fut_price / {"SPY": 10, "QQQ": 40}.get(sym.gamma_proxy, 1)
         rows = demo_chain(etf_spot)
     else:
         rows, etf_spot = fetch_chain_yahoo(sym.gamma_proxy)
