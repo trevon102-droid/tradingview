@@ -82,3 +82,69 @@ def test_closed_bars_drops_forming_candle():
     last = df.index[-1]
     assert len(closed_bars(df, pd.Timedelta(hours=1), now=last + pd.Timedelta(minutes=30))) == len(df) - 1
     assert len(closed_bars(df, pd.Timedelta(hours=1), now=last + pd.Timedelta(hours=1))) == len(df)
+
+
+# ---------- gamma must never be evaluated on historical bars ----------
+
+def _window_where(df, pred, need=60):
+    """Smallest-tail cut of df (>= need bars) whose last closes satisfy pred(closes)."""
+    for end in range(len(df), need, -1):
+        sub = df.iloc[:end]
+        if pred(sub["close"].to_numpy()):
+            return sub
+    raise AssertionError("no matching window in demo tape")
+
+
+def test_gamma_cross_on_old_bar_is_not_an_event():
+    """Regression: a flip level from TODAY's chain crossed by price 3 bars ago must not alert."""
+    from ofcore import setups
+
+    df = get_bars("ES", "1h", 60)
+
+    def pred(c):  # ONLY bar -3 crossed a level between c[-4] and c[-3]; bars before/after stay on their sides
+        zg = (c[-4] + c[-3]) / 2
+        return (abs(c[-4] - c[-3]) >= 4 and (c[-5] - zg) * (c[-4] - zg) > 0
+                and all(abs(x - zg) > 15 and (x - zg) * (c[-3] - zg) > 0 for x in c[-2:]))
+    sub = _window_where(df, pred)
+    c = sub["close"].to_numpy()
+    g = {"zero_gamma": (c[-4] + c[-3]) / 2, "call_wall": None, "put_wall": None}
+    evs, _ = setups.events("ES", sub, 0.25, g, setups.Thresholds(gamma_atr=0.01), lookback=3)
+    assert not [k for k, s in evs if s.code.startswith("gamma")], evs
+
+
+def test_gamma_cross_on_latest_bar_is_one_event_keyed_to_that_bar():
+    from ofcore import setups
+
+    df = get_bars("ES", "1h", 60)
+    sub = _window_where(df, lambda c: abs(c[-2] - c[-1]) >= 2)
+    c = sub["close"].to_numpy()
+    g = {"zero_gamma": (c[-2] + c[-1]) / 2, "call_wall": None, "put_wall": None}
+    evs, _ = setups.events("ES", sub, 0.25, g, lookback=3)
+    gam = [k for k, s in evs if s.code.startswith("gamma")]
+    assert gam == [f"ES:gamma_flip_cross:{int(sub.index[-1].timestamp())}"]
+
+
+def test_history_replay_never_sees_gamma(monkeypatch):
+    from ofcore import setups
+
+    seen = []
+    real = setups.detect
+    monkeypatch.setattr(setups, "detect", lambda sym, sub, a, g, th: (seen.append(g), real(sym, sub, a, g, th))[1])
+    setups.events("ES", get_bars("ES", "1h", 30), 0.25, {"zero_gamma": 1.0}, lookback=3)
+    assert len(seen) == 4 and all(g is None for g in seen)
+
+
+def test_gamma_state_keyed_by_level_not_bar():
+    """'Near flip' can't be diffed against history, so it alerts once per level, not every bar."""
+    from ofcore import setups
+
+    df = get_bars("ES", "1h", 60)
+    last = float(df["close"].iloc[-1])
+    prev = float(df["close"].iloc[-2])
+    lvl = last + (0.25 if last >= prev else -0.25)  # right next to price, not crossed this bar
+    g = {"zero_gamma": lvl, "call_wall": None, "put_wall": None}
+    k1 = [k for k, s in setups.events("ES", df, 0.25, g)[0] if s.code == "gamma_flip_near"]
+    assert k1 == [f"ES:gamma_flip_near:lvl={lvl:g}"]  # no bar time in the key
+    g2 = {**g, "zero_gamma": lvl + 0.25}
+    k3 = [k for k, s in setups.events("ES", df, 0.25, g2)[0] if s.code == "gamma_flip_near"]
+    assert k3 and k3 != k1  # options data moved the level -> new alert

@@ -78,19 +78,43 @@ def detect(sym: str, df: pd.DataFrame, a: dict, gamma: dict | None = None, th: T
     elif e21.iloc[-1] < e50.iloc[-1] and last["high"] >= wv.iloc[-1] > last["close"]:
         add("vwap_pullback_short", "short", f"Downtrend rally rejected weekly VWAP {wv.iloc[-1]:.6g}.")
 
-    if gamma and gamma.get("zero_gamma"):
-        zg = gamma["zero_gamma"]
+    if gamma:
+        out += detect_gamma(sym, df, a, gamma, th)
+    return out
+
+
+def detect_gamma(sym: str, df: pd.DataFrame, a: dict, gamma: dict, th: Thresholds = Thresholds()) -> list[Signal]:
+    """Gamma setups for the CURRENT closed bar only.
+
+    The gamma levels come from today's options chain. There's no historical chain, so these must never
+    be evaluated on older bars. The cross uses the previous close only as this bar's starting point."""
+    out: list[Signal] = []
+    zg = gamma.get("zero_gamma")
+    px, atr = a["last"], a["atr"] or 1e-9
+    if zg:
         prev = float(df["close"].iloc[-2])
         if (prev - zg) * (px - zg) < 0:
             regime = "negative γ, so expect expansion" if px < zg else "positive γ, so expect mean reversion"
-            add("gamma_flip_cross", "info", f"Crossed est. zero gamma {zg:g} ({regime}).")
+            out.append(Signal(sym, "gamma_flip_cross", "info", f"Crossed est. zero gamma {zg:g} ({regime}).", px))
         elif abs(px - zg) <= th.gamma_atr * atr:
-            add("gamma_flip_near", "info", f"Sitting on est. zero gamma {zg:g}. Vol regime can flip here.")
-        for name in ("call_wall", "put_wall"):
-            lvl = gamma.get(name)
-            if lvl and abs(px - lvl) <= th.gamma_atr * atr:
-                add(name, "info", f"At est. {name.replace('_', ' ')} {lvl:g}. Dealer hedging tends to pin/reject here.")
+            out.append(Signal(sym, "gamma_flip_near", "info",
+                              f"Sitting on est. zero gamma {zg:g}. Vol regime can flip here.", px))
+    for name in ("call_wall", "put_wall"):
+        lvl = gamma.get(name)
+        if lvl and abs(px - lvl) <= th.gamma_atr * atr:
+            out.append(Signal(sym, name, "info",
+                              f"At est. {name.replace('_', ' ')} {lvl:g}. Dealer hedging tends to pin/reject here.", px))
     return out
+
+
+def _gamma_key(s: Signal, bar_t: int, gamma: dict) -> str:
+    """The cross is a one-bar event -> keyed by bar. 'Near flip' / 'at wall' are states we can't diff
+    against older bars (no historical gamma), so they're keyed by the level itself: one alert per level,
+    and a new alert only when the options data moves the level."""
+    if s.code == "gamma_flip_cross":
+        return s.key(bar_t)
+    lvl = gamma.get("zero_gamma" if s.code == "gamma_flip_near" else s.code)
+    return f"{s.symbol}:{s.code}:lvl={lvl:g}"
 
 
 def closed_bars(df: pd.DataFrame, bar: pd.Timedelta, now: pd.Timestamp | None = None) -> pd.DataFrame:
@@ -105,16 +129,20 @@ def events(sym: str, df: pd.DataFrame, tick: float, gamma: dict | None = None, t
 
     A setup that stays on doesn't re-alert. If it turns off and later on again (e.g. accepted above
     value, fell back in, accepted again), that's a new event with a new key. Uses only bars up to each
-    evaluation point, so no look-ahead. Returns (events newest first, auction read of the latest bar)."""
+    evaluation point, so no look-ahead. Gamma is evaluated on the latest closed bar ONLY (see
+    detect_gamma). Returns (events newest first, auction read of the latest bar)."""
     states, reads = [], []
     for k in range(lookback + 1):
         sub = df.iloc[: len(df) - k]
         a = auction_read(sub, tick)
         reads.append(a)
-        states.append({s.code: s for s in detect(sym, sub, a, gamma, th)})
+        states.append({s.code: s for s in detect(sym, sub, a, None, th)})  # never gamma on history
     out = []
     for k in range(lookback):
         bar_t = int(df.index[len(df) - 1 - k].timestamp())
         for code in states[k].keys() - states[k + 1].keys():
             out.append((states[k][code].key(bar_t), states[k][code]))
+    if gamma:
+        bar_t = int(df.index[-1].timestamp())
+        out = [(_gamma_key(s, bar_t, gamma), s) for s in detect_gamma(sym, df, reads[0], gamma, th)] + out
     return out, reads[0]

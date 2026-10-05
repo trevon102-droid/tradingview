@@ -10,6 +10,26 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+SESSION_ROLL = time(17, 0)  # CME Globex: session D runs 18:00 ET on D-1 to 17:00 ET on D
+
+
+def session_bounds(d: date) -> tuple[float, float]:
+    """[start, end) unix seconds of trading session `d`: 17:00 ET on d-1 to 17:00 ET on d.
+    CME trades 18:00-17:00 inside that; the 17:00-18:00 halt hour (only crypto prints there) belongs to
+    the session that opens at 18:00. Wall-clock based, so DST is handled."""
+    start = datetime.combine(d - timedelta(days=1), SESSION_ROLL, ET)
+    end = datetime.combine(d, SESSION_ROLL, ET)
+    return start.timestamp(), end.timestamp()
+
+
+def session_of(ts: float) -> date:
+    """Trading session (named by its closing date) a print at unix time `ts` belongs to."""
+    wall = datetime.fromtimestamp(ts, ET)
+    return (wall + timedelta(days=1)).date() if wall.time() >= SESSION_ROLL else wall.date()
 
 
 @dataclass
@@ -100,8 +120,11 @@ class FootprintBuilder:
         self.tick, self.bar_seconds, self.row_ticks = tick, bar_seconds, row_ticks
         self.row_size = tick * row_ticks
         self.bars: deque[FPBar] = deque(maxlen=keep)
-        # session traded volume at price (for the DOM "traded" column), keyed by tick row
-        self.session: dict[int, list[float]] = {}
+        # traded volume at price per CME session (for the DOM "traded" column + session profile),
+        # keyed by session date -> tick row. Resets at 17:00 ET; a few past sessions kept for late prints.
+        self.sessions: dict[date, dict[int, list[float]]] = {}
+        self.keep_sessions = 3
+        self._sess_cache: tuple[float, float, date] | None = None
         self.last: float | None = None
         self.last_ts = -math.inf
 
@@ -134,8 +157,10 @@ class FootprintBuilder:
                 self.bars.insert(i + 1, bar)
         if bar is not None:
             bar.add(self.row(price), price, size, is_buy, ts)
-        s = self.session.setdefault(math.floor(price / self.tick + 1e-9), [0.0, 0.0])
-        s[1 if is_buy else 0] += size
+        prof = self._session_for(ts)
+        if prof is not None:
+            s = prof.setdefault(math.floor(price / self.tick + 1e-9), [0.0, 0.0])
+            s[1 if is_buy else 0] += size
         if ts >= self.last_ts:
             self.last_ts, self.last = ts, price
         return new
@@ -143,8 +168,31 @@ class FootprintBuilder:
     def snapshot(self, n: int = 120, ratio: float = 3.0, stack: int = 3) -> list[dict]:
         return [analyze(b, self.row_size, ratio, stack=stack) for b in list(self.bars)[-n:]]
 
-    def session_profile(self) -> list[list[float]]:
-        return [[round(r * self.tick, 10), v[0], v[1]] for r, v in sorted(self.session.items())]
+    def _session_for(self, ts: float) -> dict[int, list[float]] | None:
+        c = self._sess_cache
+        if c and c[0] <= ts < c[1]:
+            d = c[2]
+        else:
+            d = session_of(ts)
+            self._sess_cache = (*session_bounds(d), d)
+        if d not in self.sessions:
+            if self.sessions and d < min(self.sessions) and len(self.sessions) >= self.keep_sessions:
+                return None  # print from a session we've already dropped
+            self.sessions[d] = {}
+            for old in sorted(self.sessions)[:-self.keep_sessions]:
+                del self.sessions[old]
+        return self.sessions[d]
+
+    @property
+    def session(self) -> date | None:
+        """Current session = the one the latest print belongs to."""
+        return session_of(self.last_ts) if self.last is not None else None
+
+    def session_profile(self, d: date | None = None) -> list[list[float]]:
+        """[price, bid_vol, ask_vol] for session `d` (default: current). Never mixes sessions."""
+        d = d or self.session
+        prof = self.sessions.get(d, {}) if d else {}
+        return [[round(r * self.tick, 10), v[0], v[1]] for r, v in sorted(prof.items())]
 
 
 class Book:

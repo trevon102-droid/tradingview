@@ -148,3 +148,82 @@ def test_print_older_than_window_still_counts_in_session():
     b.on_trade(5, 97.0, 2, False)
     assert [x.t for x in b.bars] == [60, 120]
     assert {p: v for p, *v in b.session_profile()}[97.0] == [2, 0]
+
+
+# ---------- session profile resets at the CME session boundary ----------
+from datetime import date, datetime  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+_ET = ZoneInfo("America/New_York")
+
+
+def et(*a) -> float:
+    return datetime(*a, tzinfo=_ET).timestamp()
+
+
+def vol(profile) -> float:
+    return sum(b + a for _, b, a in profile)
+
+
+def test_two_sessions_never_share_profile_volume():
+    b = FootprintBuilder(0.25, 300, 1)
+    b.on_trade(et(2026, 10, 5, 16, 59), 5800.0, 7, True)    # last minute of Monday's session
+    b.on_trade(et(2026, 10, 5, 18, 1), 5801.0, 3, False)    # Globex reopen -> Tuesday's session
+    assert b.session == date(2026, 10, 6)
+    assert b.session_profile() == [[5801.0, 3, 0]]           # current session: only post-reopen volume
+    assert b.session_profile(date(2026, 10, 5)) == [[5800.0, 0, 7]]
+    assert vol(b.session_profile()) + vol(b.session_profile(date(2026, 10, 5))) == 10
+
+
+def test_session_spans_midnight_and_overnight():
+    b = FootprintBuilder(0.25, 300, 1)
+    for ts in (et(2026, 10, 5, 18, 0), et(2026, 10, 5, 23, 30), et(2026, 10, 6, 3, 0), et(2026, 10, 6, 16, 59, 59)):
+        b.on_trade(ts, 5800.0, 1, True)
+    assert b.session == date(2026, 10, 6) and vol(b.session_profile()) == 4 and len(b.sessions) == 1
+
+
+def test_exact_roll_boundary():
+    b = FootprintBuilder(0.25, 300, 1)
+    b.on_trade(et(2026, 10, 6, 16, 59, 59) + 0.999, 5800.0, 1, True)
+    b.on_trade(et(2026, 10, 6, 17, 0, 0), 5800.0, 2, True)   # 17:00:00 belongs to the next session
+    assert vol(b.session_profile(date(2026, 10, 6))) == 1 and vol(b.session_profile(date(2026, 10, 7))) == 2
+
+
+def test_sunday_open_is_mondays_session_and_friday_is_separate():
+    b = FootprintBuilder(0.25, 300, 1)
+    b.on_trade(et(2026, 10, 2, 16, 0), 5790.0, 5, False)    # Friday afternoon
+    b.on_trade(et(2026, 10, 4, 18, 0), 5795.0, 4, True)     # Sunday 18:00 open
+    assert b.session == date(2026, 10, 5)
+    assert b.session_profile() == [[5795.0, 0, 4]]
+    assert b.session_profile(date(2026, 10, 2)) == [[5790.0, 5, 0]]
+
+
+def test_session_roll_across_dst_change():
+    # US DST ends Sun Nov 1 2026: Friday closes on EDT, Sunday reopens on EST
+    b = FootprintBuilder(0.25, 300, 1)
+    b.on_trade(et(2026, 10, 30, 16, 30), 5800.0, 2, True)
+    b.on_trade(et(2026, 11, 1, 18, 0), 5810.0, 3, True)
+    b.on_trade(et(2026, 11, 2, 16, 59), 5812.0, 1, True)
+    b.on_trade(et(2026, 11, 2, 17, 0), 5813.0, 6, True)
+    assert vol(b.session_profile(date(2026, 10, 30))) == 2
+    assert vol(b.session_profile(date(2026, 11, 2))) == 4
+    assert vol(b.session_profile(date(2026, 11, 3))) == 6
+
+
+def test_late_print_from_previous_session_stays_in_that_session():
+    b = FootprintBuilder(0.25, 300, 1)
+    b.on_trade(et(2026, 10, 5, 16, 58), 5800.0, 1, True)
+    b.on_trade(et(2026, 10, 5, 18, 0), 5802.0, 1, True)      # new session started
+    b.on_trade(et(2026, 10, 5, 16, 59), 5799.0, 9, False)    # late print from the old session
+    assert b.session == date(2026, 10, 6)
+    assert vol(b.session_profile()) == 1, "late print leaked into the new session's profile"
+    assert vol(b.session_profile(date(2026, 10, 5))) == 10
+
+
+def test_old_sessions_are_dropped():
+    b = FootprintBuilder(0.25, 300, 1)
+    for d in range(5, 10):
+        b.on_trade(et(2026, 10, d, 10, 0), 5800.0, 1, True)
+    assert sorted(b.sessions) == [date(2026, 10, 7), date(2026, 10, 8), date(2026, 10, 9)]
+    b.on_trade(et(2026, 10, 5, 11, 0), 5800.0, 1, True)       # print from a dropped session: ignored
+    assert sorted(b.sessions) == [date(2026, 10, 7), date(2026, 10, 8), date(2026, 10, 9)]

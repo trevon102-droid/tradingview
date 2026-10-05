@@ -69,6 +69,10 @@ The auction *inside* each candle, built from every trade and who was aggressive.
 On connect it backfills the last ~2h so the chart isn't empty. Without a key, Live mode tells you so.
 It never falls back to fake data on its own.
 
+> **Status: the CME/Databento path is NOT verified against the real feed yet.** It's only been tested
+> against Databento's record classes with constructed data. Don't trust the CME footprint/DOM until
+> `verify_databento` prints `CLEAN` on real NQ data.
+
 **CME data path (Databento):** history comes from `trades`, then *everything* live (prints + book) comes from
 `mbp-10` alone, so the footprint and DOM can't drift apart in time. Book updates are only shown at the end of
 each exchange event (`F_LAST`), crossed books are rejected, and the DOM is labeled **L2 · top 10** because
