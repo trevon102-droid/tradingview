@@ -179,3 +179,25 @@ def test_live_event_log_is_point_in_time(tmp_path, monkeypatch):
             assert r["data_quality"]["gamma"] == "unavailable" and r["context"]["gamma_regime"] is None
             own = auction_read(df.iloc[:pos[r["bar_open"]] + 1], 0.25)
             assert r["context"]["auction_read"] == own["read"] and r["context"]["auction_state"] == own["state"]
+
+
+def test_one_hung_symbol_does_not_hang_the_scan(monkeypatch):
+    import time as _t
+
+    from scanner import scan as sc2
+
+    real = sc2._scan_symbol
+
+    def slow(key, cfg, th):
+        if key == "NQ":
+            _t.sleep(30)          # simulates a hung Yahoo request
+        return real(key, cfg, th)
+
+    monkeypatch.setattr(sc2, "_scan_symbol", slow)
+    cfg = sc2.load_config(sc2.HERE / "missing.toml")
+    cfg.update(symbols=["ES", "NQ", "CL"], gamma=False, symbol_timeout_s=2)
+    t0 = _t.time()
+    hits, rows = sc2.scan(cfg)
+    assert _t.time() - t0 < 20
+    by = {r["key"]: r for r in rows}
+    assert "timed out" in by["NQ"]["error"] and "error" not in by["ES"] and "error" not in by["CL"]

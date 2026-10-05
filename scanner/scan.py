@@ -40,6 +40,51 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
+SYMBOL_TIMEOUT_S = 90  # one stuck Yahoo request must not hang the whole scan
+
+
+def _scan_symbol(key: str, cfg: dict, th: Thresholds) -> tuple[list, dict]:
+    df = closed_bars(get_bars(key, cfg["tf"], cfg["days"]), pd.Timedelta(minutes=TF_MINUTES[cfg["tf"]]))
+    g = None
+    if cfg.get("gamma") and SYMBOLS[key].gamma_proxy:
+        try:
+            g = gamma_levels(key, float(df["close"].iloc[-1]))
+        except Exception as e:  # options data is flaky; never kill the scan over it
+            print(f"{key}: gamma unavailable ({e})", file=sys.stderr)
+    evs, a = events(key, df, SYMBOLS[key].tick, g, th, cfg.get("lookback_bars", 3))
+    sigs = [s for _, s in evs]
+    if cfg.get("log_events") and os.environ.get("OF_DATA", "yahoo") != "demo":
+        log_live_events(key, cfg["tf"], df, a, sigs, g, SYMBOLS[key].tick)
+    row = {"key": key, "last": a["last"], "bias": a["bias"], "state": a["state"], "read": a["read"],
+           "rvol": a["rvol"], "signals": len(sigs), "pine": g["pine"] if g else None,
+           "gamma_meta": (f"{g['proxy']}, calc {freshness(g)['calculated_et']}" if g else None),
+           "regime": g["regime"] if g else None}
+    return evs, row
+
+
+def _with_timeout(fn, timeout: float, *args):
+    """Run fn in a daemon thread; give up after `timeout` s (a hung network call can't be interrupted,
+    but a daemon thread won't keep the process alive)."""
+    import threading
+
+    box: dict = {}
+
+    def run():
+        try:
+            box["ok"] = fn(*args)
+        except Exception as e:
+            box["err"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"timed out after {timeout:.0f}s")
+    if "err" in box:
+        raise box["err"]
+    return box["ok"]
+
+
 def scan(cfg: dict) -> tuple[list[tuple[str, Signal]], list[dict]]:
     th = Thresholds(**cfg.get("thresholds", {}))
     hits, rows = [], []
@@ -47,26 +92,15 @@ def scan(cfg: dict) -> tuple[list[tuple[str, Signal]], list[dict]]:
         if key not in SYMBOLS:
             print(f"skip unknown symbol {key}", file=sys.stderr)
             continue
+        t0 = time.time()
         try:
-            df = closed_bars(get_bars(key, cfg["tf"], cfg["days"]), pd.Timedelta(minutes=TF_MINUTES[cfg["tf"]]))
-            g = None
-            if cfg.get("gamma") and SYMBOLS[key].gamma_proxy:
-                try:
-                    g = gamma_levels(key, float(df["close"].iloc[-1]))
-                except Exception as e:  # options data is flaky; never kill the scan over it
-                    print(f"{key}: gamma unavailable ({e})", file=sys.stderr)
-            evs, a = events(key, df, SYMBOLS[key].tick, g, th, cfg.get("lookback_bars", 3))
-            sigs = [s for _, s in evs]
+            evs, row = _with_timeout(_scan_symbol, cfg.get("symbol_timeout_s", SYMBOL_TIMEOUT_S), key, cfg, th)
             hits += evs
-            if cfg.get("log_events") and os.environ.get("OF_DATA", "yahoo") != "demo":
-                log_live_events(key, cfg["tf"], df, a, sigs, g, SYMBOLS[key].tick)
-            rows.append({"key": key, "last": a["last"], "bias": a["bias"], "state": a["state"], "read": a["read"],
-                         "rvol": a["rvol"], "signals": len(sigs), "pine": g["pine"] if g else None,
-                         "gamma_meta": (f"{g['proxy']}, calc {freshness(g)['calculated_et']}" if g else None),
-                         "regime": g["regime"] if g else None})
+            rows.append(row)
         except Exception as e:
             print(f"{key}: {e}", file=sys.stderr)
             rows.append({"key": key, "error": str(e)})
+        print(f"  {key}: {time.time() - t0:.1f}s", file=sys.stderr, flush=True)
     return hits, rows
 
 
