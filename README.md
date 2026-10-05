@@ -12,6 +12,18 @@ Three separate tools share one engine (`ofcore/`):
 | **2. Pine pack** | 4 indicators you paste into real TradingView | `pine/*.pine` |
 | **3. Scanner** | Scans your list for auction setups and pings Discord/Telegram, but only on *new* signals | `python -m scanner.scan` |
 
+## What's real and what's estimated (read this first)
+
+| Thing | What it actually is | Label in the tools |
+|---|---|---|
+| **True order flow** | Every trade with its aggressor side, from **Databento (CME)** or **Kraken (BTC/ETH)**. Used only by the `/footprint` page. **CME path: UNVERIFIED** until `verify_databento` passes on real data (see `data/validation/databento/latest.json`). | footprint, DOM `L2 · top 10` |
+| **Estimated delta / CVD** | Guessed from candles: dashboard + scanner use where each bar closed in its range; the Pine script uses lower-timeframe candle direction. **Neither is bid/ask delta.** | `Est. delta`, `EST. CVD`, Pine `Source: estimated intrabar / fallback estimate` |
+| **Estimated volume profile** | Each bar's volume spread evenly over its price range. Not true volume-at-price. | `Est. volume profile` |
+| **Estimated dealer gamma** | Computed from an **ETF proxy's** option chain (SPY→ES, QQQ→NQ) assuming dealers are long calls / short puts, scaled to futures. **Not observed futures-options gamma.** Has a calculation time and goes **STALE**. | `Est. dealer gamma`, `Positive/Negative gamma regime (est.)` |
+| **RTH data** | 09:30–16:00 America/New_York on NYSE trading days (13:00 on early closes), DST-safe, from `ofcore/sessions.py`. | `RTH`, `RTH VWAP` |
+| **Research events** | Point-in-time records of every setup the detector fires, with the context known at that moment and a `data_quality` block (`clean / estimated / degraded / unknown / unavailable`). | `data/research/events/` |
+| **Event studies** | What price did after each event vs an all-bars baseline. Statistics, not P&L: no costs, no fills, no sizing. | `scorecard.json`, `report.md` |
+
 ## Setup
 
 ```bash
@@ -92,10 +104,10 @@ Open TradingView → Pine Editor → paste → *Add to chart*. All are Pine v6.
 
 | File | What it does |
 |---|---|
-| `of_auction_profile.pine` | Composite VP on the right edge, prior-session POC + VA boxes, **naked POCs that extend until revisited**, poor high/low flags, developing POC/VA, RTH initial balance. Alert: near naked POC. |
-| `of_delta_cvd.pine` | Delta + CVD from **lower-timeframe intrabars** (much closer to footprint delta than candle estimates). CVD candles / line / delta bars, weekly reset, **CVD divergences**, **absorption** markers. Alerts for all. |
-| `of_vwap_ema_rvol.pine` | Weekly/monthly/quarterly anchored VWAPs with σ bands (clean breaks), EMA stack, RVOL candle highlight, readout table. Handles no-volume FX feeds. |
-| `of_gamma_levels.pine` | Paste the string from the dashboard/scanner (`zg;call;put;majors`) to get 0γ flip, walls, majors, and regime shading. Alerts on flip cross / wall tags. |
+| `of_auction_profile.pine` | **Estimated** composite VP on the right edge (bar volume spread over its range), prior-session POC + VA boxes, **naked POCs that extend until revisited**, *possible* poor high/low flags (heuristic), developing POC/VA, RTH initial balance. Alert: near naked POC. |
+| `of_delta_cvd.pine` | **EST. DELTA / EST. CVD** from lower-timeframe candle direction (not bid/ask). Readout shows the source (`estimated intrabar` vs `fallback estimate`, fallback bars drawn gray). `Confirmed signals only` (default on) gates alerts; divergence markers sit on the bar where they were confirmed. CVD candles / line / delta bars, weekly reset, **CVD divergences**, **absorption** markers. Alerts for all. |
+| `of_vwap_ema_rvol.pine` | **RTH VWAP** (09:30–16:00 NY, frozen after the close, session/time zone configurable) + weekly/monthly/quarterly anchored VWAPs with σ bands (clean breaks), EMA stack, RVOL candle highlight, readout table. Handles no-volume FX feeds. |
+| `of_gamma_levels.pine` | **Estimated** gamma: paste `zg;call;put;majors;proxy;calc_time` from the dashboard/scanner. Shows proxy, calculation time, age and **STALE**; neutral regime wording; never paints levels onto bars before they were calculated. Wall alerts split into approach / touch / reject / break / acceptance (confirmed bars). |
 
 ## 3. Scanner
 
@@ -128,6 +140,32 @@ It also runs on GitHub every 2h (Sun–Fri) via `.github/workflows/scanner.yml`.
 
 Each scan also prints Pine-ready gamma strings per market.
 
+## Research: which signals deserve to influence a trade?
+
+```bash
+python -m research.events all        # replay -> outcomes -> study (needs the data snapshot below)
+```
+
+1. **Data snapshot.** `.github/workflows/research-data.yml` downloads real NQ/MNQ/ES/MES bars from Yahoo
+   (1m ≈ 4 weeks, 5m ≈ 10 weeks, 1h ≈ 2.4 years) and freezes them on the `research-data` branch. Pull it with
+   `git fetch origin research-data` and extract `data/market/yahoo/`. Yahoo's `=F` contracts aren't
+   back-adjusted and the mini/micro roll on different days, so bars in roll windows or where NQ≠MNQ / ES≠MES are
+   flagged `price: degraded` and any event whose outcome window touches one is excluded (and counted).
+2. **Replay.** Bar by bar, the detector sees only data up to that bar, exactly as the live scanner would. An event
+   is the bar a setup switches on. Context (RTH/weekly VWAP, RVOL, EMA stack, auction state) is stored with it.
+   **Gamma is never replayed**: there is no historical options chain, so gamma setups are `UNTESTED` and the
+   live scanner logs them going forward (`data/research/events/live/`).
+3. **Outcomes.** Entry = event bar close. +5/15/30/60/240 min: forward return, MFE/MAE, time to a 0.5-ATR
+   favorable/adverse move, from the finest data available (1m → 5m → 1h; never interpolated).
+4. **Study.** Direction-signed return in ATR units vs the **all-bars baseline** for the same symbol/session.
+   Status is judged at one **pre-registered** horizon (30m for 5m events, 4h for 1h events) with a
+   session-clustered bootstrap CI and **both chronological halves must agree**:
+   `INSUFFICIENT_SAMPLE` (<30) / `WEAK` / `MIXED` / `PROMISING` / `INVALIDATED`. Nothing is called an edge.
+5. **Leakage tests** (`tests/test_research.py`) rebuild every event from data cut at its own bar and require a
+   byte-identical record; they were checked by planting look-ahead bugs, which they caught.
+
+Outputs: `data/research/events/scorecard.json`, `report.md`, `details.json`, `replay/*.jsonl`.
+
 ## Honest notes
 
 - **Delta/CVD in the dashboard + scanner is estimated** from where each bar closed in its range
@@ -148,5 +186,7 @@ ofcore/      engine: data, indicators, profile, auction read, gamma, setups, foo
 dashboard/   FastAPI + static frontend (lightweight-charts vendored, Apache-2.0)
 pine/        TradingView indicators
 scanner/     CLI scanner + config (scheduled run: .github/workflows/scanner.yml)
-tests/       pytest (runs on demo data, no network)
+research/    point-in-time replay, outcomes, event study, scorecard
+data/        validation reports, research events + scorecard (market snapshot lives on `research-data`)
+tests/       pytest (runs offline: demo data + constructed records, no network)
 ```
