@@ -1,0 +1,119 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// OF · Delta / CVD
+// Bar delta + cumulative volume delta built from lower-timeframe intrabars (up-close intrabar = buying,
+// down-close = selling). Closer to real footprint delta than chart-bar estimates, especially on 1h+ charts.
+// Flags CVD divergences and absorption (big delta that price refuses to follow).
+//@version=6
+indicator("OF · Delta / CVD", "OF Delta", overlay = false, format = format.volume, max_labels_count = 200)
+
+ltfIn     = input.timeframe("", "Intrabar timeframe", tooltip = "Blank = auto (5m on 1h+, 30m on daily, 4h on weekly)")
+display   = input.string("CVD candles", "Display", options = ["CVD candles", "CVD line", "Delta bars"])
+resetOn   = input.string("Week", "CVD reset", options = ["Session", "Week", "Month", "Never"])
+pivLen    = input.int(5, "Divergence pivot length", minval = 2, maxval = 30)
+absMult   = input.float(2.0, "Absorption: |delta| ≥ x × avg", minval = 1.0, step = 0.25)
+absLen    = input.int(20, "Absorption avg length", minval = 5)
+cUp       = input.color(#26a69a, "Up")
+cDn       = input.color(#ef5350, "Down")
+
+autoLtf = timeframe.isweekly or timeframe.ismonthly ? "240" : timeframe.isdaily ? "30" :
+     timeframe.multiplier >= 60 ? "5" : "1"
+ltf = ltfIn != "" ? ltfIn : autoLtf
+
+[ios, ics, ivs] = request.security_lower_tf(syminfo.tickerid, ltf, [open, close, volume])
+
+// walk the intrabars: accumulate buy/sell volume and track the CVD path inside the bar
+var float cum = 0.0
+chD = timeframe.change("D")
+chW = timeframe.change("W")
+chM = timeframe.change("M")
+resetNow = switch resetOn
+    "Session" => chD
+    "Week"    => chW
+    "Month"   => chM
+    => false
+float base = resetNow ? 0.0 : cum
+float buyV = 0.0
+float sellV = 0.0
+float run = base
+float runHi = base
+float runLo = base
+n = ics.size()
+if n > 0
+    for i = 0 to n - 1
+        float o = ios.get(i)
+        float c = ics.get(i)
+        float v = nz(ivs.get(i))
+        if c > o
+            buyV += v
+            run += v
+        else if c < o
+            sellV += v
+            run -= v
+        runHi := math.max(runHi, run)
+        runLo := math.min(runLo, run)
+else
+    // no intrabars available (old history / plan limits): fall back to close-location estimate
+    float rng = high - low
+    float d = rng > 0 ? nz(volume) * ((close - low) - (high - close)) / rng : 0.0
+    buyV := math.max(d, 0)
+    sellV := math.max(-d, 0)
+    run := base + d
+    runHi := math.max(base, run)
+    runLo := math.min(base, run)
+
+delta = buyV - sellV
+cum := base + delta
+deltaPct = buyV + sellV > 0 ? delta / (buyV + sellV) * 100 : 0.0
+
+// ───────── plots ─────────
+isCandle = display == "CVD candles"
+plotcandle(isCandle ? base : na, isCandle ? runHi : na, isCandle ? runLo : na, isCandle ? cum : na, "CVD",
+     color = cum >= base ? cUp : cDn, wickcolor = color.new(color.gray, 30), bordercolor = cum >= base ? cUp : cDn)
+plot(display == "CVD line" ? cum : na, "CVD line", color = #5b8cff, linewidth = 2)
+plot(display == "Delta bars" ? delta : na, "Delta", style = plot.style_columns, color = delta >= 0 ? cUp : cDn)
+hline(0, "Zero", color = color.new(color.gray, 70))
+
+// ───────── divergences (pivot-to-pivot price vs CVD) ─────────
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+var float lastPh = na
+var float lastPhCvd = na
+var float lastPl = na
+var float lastPlCvd = na
+bearDiv = false
+bullDiv = false
+if not na(ph)
+    float cAt = cum[pivLen]
+    bearDiv := not na(lastPh) and ph > lastPh and cAt < lastPhCvd
+    lastPh := ph
+    lastPhCvd := cAt
+if not na(pl)
+    float cAt = cum[pivLen]
+    bullDiv := not na(lastPl) and pl < lastPl and cAt > lastPlCvd
+    lastPl := pl
+    lastPlCvd := cAt
+plotshape(bearDiv, "Bearish CVD divergence", shape.triangledown, location.top, cDn, offset = -pivLen, size = size.tiny, text = "div")
+plotshape(bullDiv, "Bullish CVD divergence", shape.triangleup, location.bottom, cUp, offset = -pivLen, size = size.tiny, text = "div")
+
+// ───────── absorption: aggressive flow that price won't follow ─────────
+avgAbs = ta.sma(math.abs(delta), absLen)
+bigDelta = math.abs(delta) >= absMult * avgAbs[1]
+absorbSell = bigDelta and delta > 0 and close <= open   // buyers hit it hard, passive sellers absorbed
+absorbBuy  = bigDelta and delta < 0 and close >= open   // sellers hit it hard, passive buyers absorbed
+plotshape(absorbSell, "Sell absorption", shape.xcross, location.top, color.orange, size = size.tiny)
+plotshape(absorbBuy, "Buy absorption", shape.xcross, location.bottom, color.aqua, size = size.tiny)
+
+// ───────── readout ─────────
+var table t = table.new(position.top_right, 2, 3, bgcolor = color.new(#11151c, 10), border_width = 0)
+if barstate.islast
+    t.cell(0, 0, "Δ", text_color = color.gray, text_size = size.small)
+    t.cell(1, 0, str.tostring(delta, format.volume), text_color = delta >= 0 ? cUp : cDn, text_size = size.small)
+    t.cell(0, 1, "Δ%", text_color = color.gray, text_size = size.small)
+    t.cell(1, 1, str.tostring(deltaPct, "#.0") + "%", text_color = delta >= 0 ? cUp : cDn, text_size = size.small)
+    t.cell(0, 2, "intrabars", text_color = color.gray, text_size = size.small)
+    t.cell(1, 2, n > 0 ? ltf + " × " + str.tostring(n) : "est.", text_color = color.gray, text_size = size.small)
+
+alertcondition(bearDiv, "Bearish CVD divergence", "{{ticker}}: price HH, CVD LH")
+alertcondition(bullDiv, "Bullish CVD divergence", "{{ticker}}: price LL, CVD HL")
+alertcondition(absorbSell, "Sell absorption", "{{ticker}}: big buy delta absorbed")
+alertcondition(absorbBuy, "Buy absorption", "{{ticker}}: big sell delta absorbed")

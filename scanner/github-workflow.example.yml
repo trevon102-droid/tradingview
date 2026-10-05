@@ -1,0 +1,31 @@
+# Run the scanner on GitHub's runners on a schedule, so your machine doesn't need to be on.
+# To enable: copy to .github/workflows/scanner.yml, then add repo secrets
+#   DISCORD_WEBHOOK_URL   and/or   TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+name: OF scanner
+
+on:
+  schedule:
+    - cron: "7 */2 * * 0-5"   # every 2h, Sun–Fri (UTC). Futures/FX week.
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # keep "already alerted" memory between runs
+      - uses: actions/cache@v4
+        with:
+          path: scanner/.state.json
+          key: scanner-state-${{ github.run_id }}
+          restore-keys: scanner-state-
+      - run: python -m scanner.scan
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

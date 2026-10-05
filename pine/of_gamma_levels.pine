@@ -1,0 +1,66 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// OF · Gamma Levels
+// Pine can't read options chains, so the dashboard / scanner computes dealer gamma from the ETF proxy
+// (SPY→ES, QQQ→NQ, GLD→GC, …), maps it to futures prices, and gives you a string to paste here:
+//     zeroGamma;callWall;putWall;major1,major2,...
+//@version=6
+indicator("OF · Gamma Levels", "OF Gamma", overlay = true, max_lines_count = 50, max_labels_count = 50)
+
+levelsIn = input.string("", "Paste levels", tooltip = "From the dashboard Gamma card (Copy) or the scanner output: zg;call;put;majors")
+scale    = input.float(1.0, "Scale", step = 0.0001, tooltip = "Leave 1 for futures-mapped levels. Use e.g. 10 if you pasted raw SPY strikes onto ES.")
+basis    = input.float(0.0, "Offset", tooltip = "Add a fixed offset (e.g. to adjust for roll/basis drift since the levels were computed)")
+shade    = input.bool(true, "Shade gamma regime")
+showMaj  = input.bool(true, "Show major strikes")
+cZg      = input.color(#f5c542, "Zero gamma")
+cCall    = input.color(#26a69a, "Call wall")
+cPut     = input.color(#ef5350, "Put wall")
+cMaj     = input.color(color.new(#9aa4b2, 40), "Major strikes")
+
+f_num(string s) =>
+    float x = str.tonumber(str.trim(s))
+    na(x) or x == 0 ? na : x * scale + basis
+
+parts = str.split(levelsIn, ";")
+zg    = parts.size() > 0 ? f_num(parts.get(0)) : na
+cw    = parts.size() > 1 ? f_num(parts.get(1)) : na
+pw    = parts.size() > 2 ? f_num(parts.get(2)) : na
+
+var array<line>  lns  = array.new_line()
+var array<label> lbls = array.new_label()
+
+f_level(float px, color c, string txt, int w, string st) =>
+    if not na(px)
+        lns.push(line.new(bar_index - 1, px, bar_index, px, extend = extend.both, color = c, width = w, style = st))
+        lbls.push(label.new(bar_index + 3, px, txt + "  " + str.tostring(px, format.mintick), style = label.style_label_left,
+             color = color.new(c, 80), textcolor = c, size = size.small))
+
+if barstate.islast
+    for l in lns
+        l.delete()
+    lns.clear()
+    for l in lbls
+        l.delete()
+    lbls.clear()
+    if showMaj and parts.size() > 3
+        for s in str.split(parts.get(3), ",")
+            float px = f_num(s)
+            if not na(px) and px != cw and px != pw
+                lns.push(line.new(bar_index - 1, px, bar_index, px, extend = extend.both, color = cMaj, style = line.style_dotted))
+    f_level(zg, cZg, "0γ flip", 2, line.style_solid)
+    f_level(cw, cCall, "Call wall", 2, line.style_solid)
+    f_level(pw, cPut, "Put wall", 2, line.style_solid)
+
+posGamma = not na(zg) and close > zg
+bgcolor(shade and not na(zg) ? (posGamma ? color.new(#26a69a, 94) : color.new(#ef5350, 94)) : na, title = "Gamma regime")
+
+var table t = table.new(position.top_right, 1, 1)
+if barstate.islast and not na(zg)
+    t.cell(0, 0, posGamma ? "+γ  mean-revert / pin" : "−γ  trend / expansion", bgcolor = color.new(posGamma ? #26a69a : #ef5350, 70),
+         text_color = color.white, text_size = size.small)
+
+xZg = ta.cross(close, zg)
+xCw = ta.crossover(high, cw)
+xPw = ta.crossunder(low, pw)
+alertcondition(xZg, "Zero gamma cross", "{{ticker}} crossed the gamma flip")
+alertcondition(xCw, "Call wall tag", "{{ticker}} tagged the call wall")
+alertcondition(xPw, "Put wall tag", "{{ticker}} tagged the put wall")

@@ -1,0 +1,11 @@
+# OF scanner config. Symbols must exist in ofcore/data.py SYMBOLS.
+symbols = ["ES", "NQ", "RTY", "CL", "GC", "6E", "6B", "6J", "EURUSD", "GBPUSD"]
+tf = "1h"        # 1h | 4h | 1d
+days = 60        # lookback that defines the composite profile
+gamma = true     # pull options chains for gamma levels (slower; ES/NQ/RTY/GC/CL/FX ETFs)
+
+[thresholds]
+edge_atr = 0.3   # how close to a balance edge counts as "at the edge"
+npoc_atr = 0.5   # proximity to a naked POC
+gamma_atr = 0.3  # proximity to zero gamma / walls
+rvol = 2.0
