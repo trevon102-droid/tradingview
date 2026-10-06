@@ -9,7 +9,7 @@ Three separate tools share one engine (`ofcore/`):
 |---|---|---|
 | **1. Dashboard** | TV-style web app: candles, composite profile, session POC/VA, naked POCs, VWAPs, EMAs, CVD pane, auction read, gamma levels | `uvicorn dashboard.app:app --reload` → http://localhost:8000 |
 | **1b. Footprint + DOM** | Bid×ask per price inside every candle, diagonal imbalances, stacked-imbalance zones, unfinished auctions, plus a DOM ladder + time & sales | same server → http://localhost:8000/footprint |
-| **2. Pine pack** | 4 indicators you paste into real TradingView | `pine/*.pine` |
+| **2. Pine pack** | 5 indicators you paste into real TradingView | `pine/*.pine` |
 | **3. Scanner** | Scans your list for auction setups and pings Discord/Telegram, but only on *new* signals | `python -m scanner.scan` |
 
 ## What's real and what's estimated (read this first)
@@ -108,6 +108,7 @@ Open TradingView → Pine Editor → paste → *Add to chart*. All are Pine v6.
 | `of_delta_cvd.pine` | **EST. DELTA / EST. CVD** from lower-timeframe candle direction (not bid/ask). Readout shows the source (`estimated intrabar` vs `fallback estimate`, fallback bars drawn gray). `Confirmed signals only` (default on) gates alerts; divergence markers sit on the bar where they were confirmed. CVD candles / line / delta bars, weekly reset, **CVD divergences**, **absorption** markers. Alerts for all. |
 | `of_vwap_ema_rvol.pine` | **RTH VWAP** (09:30–16:00 NY, frozen after the close, session/time zone configurable) + weekly/monthly/quarterly anchored VWAPs with σ bands (clean breaks), EMA stack, RVOL candle highlight, readout table. Handles no-volume FX feeds. |
 | `of_gamma_levels.pine` | **Estimated** gamma: paste `zg;call;put;majors;proxy;calc_time` from the dashboard/scanner. Shows proxy, calculation time, age and **STALE**; neutral regime wording; never paints levels onto bars before they were calculated. Wall alerts split into approach / touch / reject / break / acceptance (confirmed bars). |
+| `of_qqq_strike_map.pine` | QQQ strike grid + your key levels (call/put wall, Γ/λ zones) drawn on NQ/MNQ at the **live NQ/QQQ ratio** (held overnight while QQQ is closed). Levels are typed in from your GEX source or the scanner, not computed. Alerts: wall touch/cross, key-level touch (confirmed bars). |
 
 ## 3. Scanner
 

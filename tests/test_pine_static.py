@@ -80,3 +80,13 @@ def test_gamma_wording_is_neutral_and_levels_not_painted_on_history():
     for name in ("cApproach", "cTouch", "cReject", "cBreak", "cAccept", "pApproach", "pTouch", "pReject",
                  "pBreak", "pAccept", "zCross"):
         assert re.search(rf"^{name}\s*=\s*ok and", s, re.M), name   # every wall event requires a confirmed live bar
+
+
+def test_qqq_strike_map_uses_held_live_ratio_and_confirmed_alerts():
+    s = src("of_qqq_strike_map.pine")
+    assert "gaps = barmerge.gaps_on" in s and "lookahead = barmerge.lookahead_off" in s  # stale QQQ never moves levels
+    assert "liveRat := close / qqqNew" in s
+    assert "not computed here" in s and "Levels as of" in s
+    for name in ("callTouch", "callCross", "putTouch", "putCross", "keyHit"):
+        assert re.search(rf"^{name}\s*=\s*ok and", s, re.M), name
+    assert "if kStrike.size() > 0\n" in s   # Pine's 0 to -1 loop would run backwards on an empty list

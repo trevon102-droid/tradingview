@@ -1,0 +1,132 @@
+// OF · QQQ Strike Map
+// Draws QQQ option strikes and your key gamma levels on NQ / MNQ, converted at the LIVE NQ/QQQ ratio, so the levels
+// track the basis instead of drifting like a fixed multiplier.
+// The levels are whatever you type in (from your GEX source or the OF scanner). This script does not compute gamma,
+// and the lines are only where those strikes sit at today's ratio. They aren't drawn back on history.
+//
+// Key levels format (QQQ strikes):  strike:name, strike:name, ...
+//     e.g.  756:Call Wall 0DTE, 754.5:Γ-1, 753.5:Γ-5, 750:Γ-2, 749:λ-1, 748:Γ-3, 747:λ-2, 745:Γ-4
+//@version=6
+indicator("OF · QQQ Strike Map", "OF QQQ map", overlay = true, max_lines_count = 120, max_labels_count = 120, max_boxes_count = 60)
+
+grpR = "Conversion"
+pxSym     = input.symbol("NASDAQ:QQQ", "Proxy ETF", group = grpR)
+manRatio  = input.float(0.0, "Manual ratio (0 = live)", step = 0.01, group = grpR, tooltip = "Futures points per 1 QQQ point. 0 = live chart close / QQQ close.")
+
+grpL = "Levels (QQQ strikes)"
+callQ     = input.float(0.0, "Call wall", step = 0.5, group = grpL, tooltip = "0 = off")
+putQ      = input.float(0.0, "Put wall", step = 0.5, group = grpL, tooltip = "0 = off")
+keysIn    = input.string("", "Key levels", group = grpL, tooltip = "strike:name, strike:name, ...  e.g. 754.5:Γ-1, 749:λ-1")
+asOf      = input.string("", "Levels as of", group = grpL, tooltip = "Free text shown in the readout, e.g. 2026-10-06 AM")
+zoneH     = input.float(10.0, "Zone height (futures pts)", minval = 0, group = grpL)
+
+grpG = "Strike grid"
+showGrid  = input.bool(true, "Show strike grid", group = grpG)
+step      = input.float(0.5, "Strike step", minval = 0.01, group = grpG)
+nEach     = input.int(12, "Strikes above / below", minval = 1, maxval = 40, group = grpG)
+
+cCall = input.color(#ef5350, "Call wall")
+cPut  = input.color(#26a69a, "Put wall")
+cGam  = input.color(#4f8fe6, "Γ levels")
+cLam  = input.color(#9c6ade, "λ levels")
+cGrid = input.color(color.new(#9aa4b2, 55), "Grid")
+
+// ───────── live ratio ─────────
+// gaps_on: only update the ratio on bars where QQQ actually printed. Overnight (QQQ closed) the last ratio is held,
+// otherwise the levels would slide with NQ against a stale QQQ price.
+qqqNew = request.security(ticker.modify(pxSym, session.extended), timeframe.period, close, gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+var float qqq      = na
+var float liveRat  = na
+if not na(qqqNew) and qqqNew > 0
+    qqq     := qqqNew
+    liveRat := close / qqqNew
+ratio = manRatio > 0 ? manRatio : liveRat
+
+f_fut(float strike) =>
+    na(strike) or strike <= 0 or na(ratio) ? na : strike * ratio
+
+// ───────── parse key levels once ─────────
+var array<float>  kStrike = array.new_float()
+var array<string> kName   = array.new_string()
+if barstate.isfirst
+    for item in str.split(keysIn, ",")
+        kv = str.split(str.trim(item), ":")
+        float s = kv.size() > 0 ? str.tonumber(str.trim(kv.get(0))) : na
+        if not na(s) and s > 0
+            kStrike.push(s)
+            kName.push(kv.size() > 1 ? str.trim(kv.get(1)) : "")
+
+f_color(string name) =>
+    string n = str.lower(name)
+    str.contains(n, "call") ? cCall : str.contains(n, "put") ? cPut : (str.startswith(name, "λ") or str.startswith(n, "lambda")) ? cLam : cGam
+
+// ───────── drawing (last bar only) ─────────
+var array<line>  gLines  = array.new_line()
+var array<label> gLabels = array.new_label()
+var array<box>   gBoxes  = array.new_box()
+
+f_zone(float strike, string name, color c, int w) =>
+    float px = f_fut(strike)
+    if not na(px)
+        float h = math.max(zoneH, syminfo.mintick) / 2
+        gBoxes.push(box.new(bar_index - 40, px + h, bar_index + 8, px - h, border_color = c, border_width = w,
+             bgcolor = color.new(c, 82), extend = extend.right, text = name + "  " + str.tostring(strike) + " → " + str.tostring(px, format.mintick),
+             text_color = c, text_size = size.small, text_halign = text.align_center))
+
+if barstate.islast
+    for l in gLines
+        l.delete()
+    gLines.clear()
+    for l in gLabels
+        l.delete()
+    gLabels.clear()
+    for b in gBoxes
+        b.delete()
+    gBoxes.clear()
+    if showGrid and not na(qqq) and not na(ratio)
+        float base = math.round(qqq / step) * step
+        for i = -nEach to nEach
+            float k  = base + i * step
+            float px = k * ratio
+            gLines.push(line.new(bar_index - 40, px, bar_index, px, extend = extend.right, color = cGrid, style = line.style_dotted))
+            gLabels.push(label.new(bar_index + 10, px, "QQQ " + str.tostring(k), style = label.style_none, textcolor = cGrid, size = size.small))
+    if kStrike.size() > 0
+        for i = 0 to kStrike.size() - 1
+            string nm = kName.get(i)
+            f_zone(kStrike.get(i), nm == "" ? "QQQ" : nm, f_color(nm), 1)
+    f_zone(callQ, "Call wall", cCall, 2)
+    f_zone(putQ, "Put wall", cPut, 2)
+
+// ───────── readout ─────────
+var table t = table.new(position.top_right, 1, 3, bgcolor = color.new(#11151c, 10))
+if barstate.islast
+    t.cell(0, 0, "QQQ last " + (na(qqq) ? "n/a" : str.tostring(qqq, "#.##")) + " · ratio " + (na(ratio) ? "n/a" : str.tostring(ratio, "#.####")) +
+         (manRatio > 0 ? " (manual)" : " (live)"), text_color = color.silver, text_size = size.small)
+    t.cell(0, 1, "Levels as of: " + (asOf == "" ? "not set" : asOf), text_color = asOf == "" ? color.orange : color.silver, text_size = size.small)
+    t.cell(0, 2, "Typed-in levels · not computed here", text_color = color.gray, text_size = size.small)
+
+// ───────── alerts (confirmed bars) ─────────
+cwF = f_fut(callQ)
+pwF = f_fut(putQ)
+cwX = ta.cross(close, cwF)
+pwX = ta.cross(close, pwF)
+
+bool keyTouch = false
+if kStrike.size() > 0
+    for i = 0 to kStrike.size() - 1
+        float px = f_fut(kStrike.get(i))
+        if not na(px) and high >= px and low <= px
+            keyTouch := true
+
+ok         = barstate.isconfirmed
+callTouch  = ok and not na(cwF) and high >= cwF and high[1] < cwF
+callCross  = ok and not na(cwF) and cwX
+putTouch   = ok and not na(pwF) and low <= pwF and low[1] > pwF
+putCross   = ok and not na(pwF) and pwX
+keyHit     = ok and keyTouch
+
+alertcondition(callTouch, "Call wall touch", "{{ticker}} touched the QQQ call wall (mapped)")
+alertcondition(callCross, "Call wall cross", "{{ticker}} closed across the QQQ call wall (mapped)")
+alertcondition(putTouch, "Put wall touch", "{{ticker}} touched the QQQ put wall (mapped)")
+alertcondition(putCross, "Put wall cross", "{{ticker}} closed across the QQQ put wall (mapped)")
+alertcondition(keyHit, "Key level touch", "{{ticker}} traded through a mapped QQQ key level")
