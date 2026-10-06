@@ -98,12 +98,16 @@ if barstate.islast
     f_zone(putQ, "Put wall", cPut, 2)
 
 // ───────── readout ─────────
-var table t = table.new(position.top_right, 1, 3, bgcolor = color.new(#11151c, 10))
+rootOk = syminfo.root == "NQ" or syminfo.root == "MNQ"
+var table t = table.new(position.top_right, 1, 4, bgcolor = color.new(#11151c, 10))
 if barstate.islast
     t.cell(0, 0, "QQQ last " + (na(qqq) ? "n/a" : str.tostring(qqq, "#.##")) + " · ratio " + (na(ratio) ? "n/a" : str.tostring(ratio, "#.####")) +
          (manRatio > 0 ? " (manual)" : " (live)"), text_color = color.silver, text_size = size.small)
     t.cell(0, 1, "Levels as of: " + (asOf == "" ? "not set" : asOf), text_color = asOf == "" ? color.orange : color.silver, text_size = size.small)
     t.cell(0, 2, "Typed-in levels · not computed here", text_color = color.gray, text_size = size.small)
+    if not rootOk and manRatio <= 0
+        t.cell(0, 3, "Chart isn't NQ/MNQ: live ratio maps QQQ onto " + syminfo.ticker, text_color = color.white,
+             bgcolor = color.new(#ef5350, 30), text_size = size.small)
 
 // ───────── alerts (confirmed bars) ─────────
 cwF = f_fut(callQ)
@@ -119,9 +123,10 @@ if kStrike.size() > 0
             keyTouch := true
 
 ok         = barstate.isconfirmed
-callTouch  = ok and not na(cwF) and high >= cwF and high[1] < cwF
+// the mapped wall moves with the ratio, so each bar is compared against the wall AS IT WAS on that bar
+callTouch  = ok and not na(cwF) and not na(cwF[1]) and high >= cwF and high[1] < cwF[1]
 callCross  = ok and not na(cwF) and cwX
-putTouch   = ok and not na(pwF) and low <= pwF and low[1] > pwF
+putTouch   = ok and not na(pwF) and not na(pwF[1]) and low <= pwF and low[1] > pwF[1]
 putCross   = ok and not na(pwF) and pwX
 keyHit     = ok and keyTouch
 

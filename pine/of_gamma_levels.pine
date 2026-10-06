@@ -78,7 +78,10 @@ if barstate.islast and not na(zg)
 
 // ───────── wall events: approach / touch / reject / break / acceptance ─────────
 atr14 = ta.atr(14)
-ok    = live and barstate.isconfirmed
+// stale levels never alert: judged per bar (age at that bar's close), so a bar that closed while the levels were
+// fresh keeps its marker, and nothing fires once they're older than the stale limit (or have no calc time)
+staleAtBar = na(calcMs) or (time_close - calcMs) / 60000.0 > staleMin
+ok    = live and barstate.isconfirmed and not staleAtBar
 
 // call wall (above price)
 cApproach = ok and not na(cw) and close < cw and cw - close <= apprAtr * atr14 and not (close[1] < cw and cw - close[1] <= apprAtr * atr14[1])

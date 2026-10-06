@@ -19,10 +19,12 @@ vaPct      = input.float(70, "Value area %", minval = 50, maxval = 95, group = g
 
 grpS = "Session value areas"
 showSess   = input.bool(true, "Prior session POC + VA", group = grpS)
-sessIn     = input.string("Auto", "Session", options = ["Auto", "D", "W", "M"], group = grpS,
-     tooltip = "Auto = daily sessions on intraday charts, weekly on daily+")
+sessIn     = input.string("Auto", "Session", options = ["Auto", "CME 18:00-17:00 ET", "D", "W", "M"], group = grpS,
+     tooltip = "Auto = CME session (18:00-17:00 ET) on intraday futures, chart-day on other intraday, weekly on daily+")
 sessRows   = input.int(40, "Rows per session", minval = 10, maxval = 120, group = grpS)
 keepSess   = input.int(15, "Sessions to keep", minval = 1, maxval = 60, group = grpS)
+maxSessBar = input.int(3000, "Max bars per session profile", minval = 200, maxval = 10000, group = grpS,
+     tooltip = "Guard against Pine loop / time limits (e.g. weekly sessions on a 1m chart). Longer sessions are skipped and flagged.")
 showNaked  = input.bool(true, "Extend naked POCs until revisited", group = grpS)
 maxNaked   = input.int(10, "Max naked POCs", minval = 1, maxval = 40, group = grpS)
 showPoor   = input.bool(true, "Flag possible poor highs / lows (heuristic)", group = grpS)
@@ -41,7 +43,14 @@ cSess  = input.color(color.new(#5b8cff, 92), "Session VA fill", group = grpK)
 cNaked = input.color(#e879f9, "Naked POC", group = grpK)
 cIB    = input.color(color.new(#9aa4b2, 0), "IB", group = grpK)
 
-sessTf = sessIn == "Auto" ? (timeframe.isintraday ? "D" : "W") : sessIn
+isFut  = syminfo.type == "futures"
+useCme = timeframe.isintraday and (sessIn == "CME 18:00-17:00 ET" or (sessIn == "Auto" and isFut))
+sessTf = sessIn == "Auto" or sessIn == "CME 18:00-17:00 ET" ? (timeframe.isintraday ? "D" : "W") : sessIn
+// CME trading day D runs 18:00 ET (D-1) -> 17:00 ET (D). Shifting by +6 h puts 18:00 ET on midnight, so the NY
+// calendar date of (time + 6h) is the trading day. Computed in America/New_York, so it's DST-safe and doesn't
+// depend on the chart's exchange time zone. (DST switches happen at 02:00 Sunday, while CME is closed.)
+cmeT   = time + 6 * 3600 * 1000
+cmeDay = year(cmeT, "America/New_York") * 10000 + month(cmeT, "America/New_York") * 100 + dayofmonth(cmeT, "America/New_York")
 vol    = na(volume) or volume == 0 ? 1.0 : volume   // spot FX: no volume -> time-weighted (TPO-ish)
 
 // ───────── profile engine ─────────
@@ -85,9 +94,12 @@ var array<line>  nakedLn   = array.new_line()
 var array<float> nakedPx   = array.new_float()
 var array<label> poorLbls  = array.new_label()
 
-newSess = timeframe.change(sessTf)
+newSess = useCme ? cmeDay != cmeDay[1] : timeframe.change(sessTf)
+var int skipped = 0
 
-if newSess and sH.size() >= 3
+if newSess and sH.size() > maxSessBar
+    skipped += 1
+if newSess and sH.size() >= 3 and sH.size() <= maxSessBar
     [bins, bot, step, poc, lo, hi] = f_profile(sH, sL, sV, sessRows, vaPct)
     float pocPx = bot + (poc + 0.5) * step
     float vah   = bot + (hi + 1) * step
@@ -128,9 +140,10 @@ if newSess
     sV.clear()
     sStart := time
 
-sH.push(high)
-sL.push(low)
-sV.push(vol)
+if sH.size() <= maxSessBar      // one past the cap is enough to know the session gets skipped; bounds memory
+    sH.push(high)
+    sL.push(low)
+    sV.push(vol)
 
 // naked POCs die once price trades back through them
 if showNaked and nakedPx.size() > 0
@@ -214,12 +227,18 @@ if barstate.islast
         lastLines.push(line.new(bar_index - n + 1, bot + (hi + 1) * step, x0 + compWidth, bot + (hi + 1) * step, color = color.new(#5b8cff, 30), style = line.style_dotted))
         lastLines.push(line.new(bar_index - n + 1, bot + lo * step, x0 + compWidth, bot + lo * step, color = color.new(#5b8cff, 30), style = line.style_dotted))
 
-    if showDev and sH.size() >= 2
+    if showDev and sH.size() >= 2 and sH.size() <= maxSessBar
         [dBins, dBot, dStep, dPoc, dLo, dHi] = f_profile(sH, sL, sV, sessRows, vaPct)
         float dp = dBot + (dPoc + 0.5) * dStep
         lastLines.push(line.new(sStart, dp, time, dp, xloc = xloc.bar_time, color = cPoc, width = 2))
         lastLines.push(line.new(sStart, dBot + (dHi + 1) * dStep, time, dBot + (dHi + 1) * dStep, xloc = xloc.bar_time, color = color.new(#5b8cff, 20)))
         lastLines.push(line.new(sStart, dBot + dLo * dStep, time, dBot + dLo * dStep, xloc = xloc.bar_time, color = color.new(#5b8cff, 20)))
+
+var table gt = table.new(position.bottom_left, 1, 1, bgcolor = color.new(#11151c, 10))
+if barstate.islast
+    string sessName = useCme ? "CME 18:00-17:00 ET" : sessTf
+    gt.cell(0, 0, "Sessions: " + sessName + (skipped > 0 ? " · " + str.tostring(skipped) + " skipped (> " + str.tostring(maxSessBar) + " bars)" : ""),
+         text_color = skipped > 0 ? color.orange : color.gray, text_size = size.tiny)
 
 // ───────── alerts ─────────
 atr14 = ta.atr(14)

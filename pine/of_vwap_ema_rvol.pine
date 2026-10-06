@@ -1,6 +1,8 @@
 // OF · VWAPs + EMAs + RVOL
 // RTH VWAP (NY cash session) + weekly / monthly / quarterly anchored VWAPs with σ bands (clean breaks at
-// each reset), EMA stack, and RVOL candle highlighting. Works on FX feeds with no volume (falls back to TWAP).
+// each reset), EMA stack, and RVOL candle highlighting. On feeds with no volume (spot FX, some CFDs) the VWAPs
+// become TWAPs (every bar weighted equally) and RVOL is not available; the readout says so instead of showing
+// a VWAP / RVOL that doesn't exist. RTH VWAP is only drawn on charts of 1h or lower.
 // RTH VWAP: resets on the first bar inside the session (default 09:30-16:00 America/New_York, DST-aware via
 // the IANA time zone), accumulates only during the session, and is frozen after the close. A bar counts as
 // RTH when it OPENS inside the session, so use a chart of 30m or lower for an exact 09:30 anchor
@@ -38,6 +40,8 @@ rvColor = input.bool(true, "Color high-RVOL candles", group = grpR)
 showTbl = input.bool(true, "Readout table", group = grpR)
 
 vol = na(volume) or volume == 0 ? 1.0 : volume
+noVol = ta.cum(nz(volume)) == 0          // no volume seen on this feed so far
+vw    = noVol ? "TWAP" : "VWAP"
 
 f_avwap(bool reset, float src, float v) =>
     var float sPV  = 0.0
@@ -54,7 +58,8 @@ f_avwap(bool reset, float src, float v) =>
     [vw, math.sqrt(math.max(sPV2 / sV - vw * vw, 0.0))]
 
 // RTH VWAP: reset at the first in-session bar, add only in session, hold the final value after the close
-inRth    = timeframe.isintraday and not na(time(timeframe.period, rthSess, rthTz))
+rthTfOk  = timeframe.isintraday and timeframe.in_seconds() <= 3600   // a 4h bar can't hold a 09:30 anchor
+inRth    = rthTfOk and not na(time(timeframe.period, rthSess, rthTz))
 rthStart = inRth and not inRth[1]
 f_rthvwap(bool reset, bool add, float src, float v) =>
     var float sPV  = 0.0
@@ -110,8 +115,8 @@ plot(showE ? ema2 : na, "EMA 2", #f59e0b, 1)
 plot(showE ? ema3 : na, "EMA 3", #a78bfa, 1)
 plot(showE ? ema4 : na, "EMA 4", #e5e7eb, 2)
 
-rvol = volume / ta.sma(volume, rvLen)[1]
-hot  = not na(rvol) and rvol >= rvHi
+rvol = noVol ? na : volume / ta.sma(volume, rvLen)[1]
+hot  = not noVol and not na(rvol) and rvol >= rvHi
 barcolor(rvColor and hot ? (close >= open ? #00e5ff : #ff9100) : na, title = "High RVOL")
 
 stack = ema1 > ema2 and ema2 > ema3 ? "bull stack" : ema1 < ema2 and ema2 < ema3 ? "bear stack" : "mixed"
@@ -119,14 +124,15 @@ sigmaW = wS > 0 ? (close - wV) / wS : 0.0
 
 var table t = table.new(position.bottom_right, 2, 6, bgcolor = color.new(#11151c, 10))
 if showTbl and barstate.islast
-    t.cell(0, 0, inRth ? "RTH VWAP" : "RTH VWAP (closed)", text_color = cR, text_size = size.small)
-    t.cell(1, 0, na(rV) ? "—" : str.tostring(rV, format.mintick), text_color = cR, text_size = size.small)
-    t.cell(0, 1, "Weekly VWAP", text_color = cW, text_size = size.small)
+    t.cell(0, 0, "RTH " + vw + (not rthTfOk ? " (needs ≤1h chart)" : inRth ? "" : " (closed)"), text_color = cR, text_size = size.small)
+    t.cell(1, 0, na(rV) or not rthTfOk ? "—" : str.tostring(rV, format.mintick), text_color = cR, text_size = size.small)
+    t.cell(0, 1, "Weekly " + vw, text_color = cW, text_size = size.small)
     t.cell(1, 1, str.tostring(wV, format.mintick) + "  (" + (sigmaW >= 0 ? "+" : "") + str.tostring(sigmaW, "#.0") + "σ)", text_color = cW, text_size = size.small)
-    t.cell(0, 2, "Monthly VWAP", text_color = cM, text_size = size.small)
+    t.cell(0, 2, "Monthly " + vw, text_color = cM, text_size = size.small)
     t.cell(1, 2, str.tostring(mV, format.mintick), text_color = cM, text_size = size.small)
     t.cell(0, 3, "RVOL", text_color = color.gray, text_size = size.small)
-    t.cell(1, 3, na(rvol) ? "—" : str.tostring(rvol, "#.00") + "x", text_color = hot ? color.orange : color.silver, text_size = size.small)
+    t.cell(1, 3, noVol ? "n/a · no volume on this feed" : na(rvol) ? "—" : str.tostring(rvol, "#.00") + "x",
+         text_color = noVol ? color.orange : hot ? color.orange : color.silver, text_size = size.small)
     t.cell(0, 4, "EMAs", text_color = color.gray, text_size = size.small)
     t.cell(1, 4, stack, text_color = stack == "bull stack" ? #26a69a : stack == "bear stack" ? #ef5350 : color.silver, text_size = size.small)
 

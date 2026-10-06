@@ -53,7 +53,7 @@ def test_rth_vwap_session_and_freeze():
     s = src("of_vwap_ema_rvol.pine")
     assert 'input.session("0930-1600"' in s and 'input.string("America/New_York"' in s
     assert "f_rthvwap(rthStart, inRth, hlc3, vol)" in s       # reset at session start, add only in session
-    assert '"RTH VWAP"' in s and '"Weekly VWAP"' in s and '"Monthly VWAP"' in s
+    assert '"RTH VWAP"' in s and '"Weekly " + vw' in s and '"Monthly " + vw' in s
     assert all("barstate.isconfirmed" in a for a in alerts(s))
 
 
@@ -90,3 +90,43 @@ def test_qqq_strike_map_uses_held_live_ratio_and_confirmed_alerts():
     for name in ("callTouch", "callCross", "putTouch", "putCross", "keyHit"):
         assert re.search(rf"^{name}\s*=\s*ok and", s, re.M), name
     assert "if kStrike.size() > 0\n" in s   # Pine's 0 to -1 loop would run backwards on an empty list
+
+
+def test_strike_map_touch_compares_against_prior_bar_wall():
+    s = src("of_qqq_strike_map.pine")
+    assert "high[1] < cwF[1]" in s and "low[1] > pwF[1]" in s
+    assert "high[1] < cwF\n" not in s and "low[1] > pwF\n" not in s
+
+
+def test_stale_gamma_disables_alerts():
+    s = src("of_gamma_levels.pine")
+    assert "staleAtBar = na(calcMs) or (time_close - calcMs) / 60000.0 > staleMin" in s
+    assert re.search(r"^ok\s*=\s*live and barstate\.isconfirmed and not staleAtBar", s, re.M)
+
+
+def test_cvd_divergence_never_pairs_pivots_across_a_reset():
+    s = src("of_delta_cvd.pine")
+    assert "epoch += resetNow ? 1 : 0" in s and "pivEpoch = epoch[pivLen]" in s
+    assert "lastPhEp == pivEpoch" in s and "lastPlEp == pivEpoch" in s
+
+
+def test_delta_intrabar_tf_must_be_below_chart_tf():
+    s = src("of_delta_cvd.pine")
+    assert "ltfBad = ltfIn != \"\" and timeframe.in_seconds(ltfIn) >= timeframe.in_seconds()" in s
+    assert "not ltfBad ? ltfIn : autoLtf" in s
+
+
+def test_profile_uses_explicit_cme_session_on_futures():
+    s = src("of_auction_profile.pine")
+    assert '"CME 18:00-17:00 ET"' in s and 'syminfo.type == "futures"' in s
+    assert "cmeT   = time + 6 * 3600 * 1000" in s and '"America/New_York")' in s
+    assert "newSess = useCme ? cmeDay != cmeDay[1] : timeframe.change(sessTf)" in s
+    assert "sH.size() <= maxSessBar" in s        # resource guard
+
+
+def test_vwap_no_volume_is_called_twap_and_rvol_na():
+    s = src("of_vwap_ema_rvol.pine")
+    assert "noVol = ta.cum(nz(volume)) == 0" in s and '"TWAP"' in s
+    assert "rvol = noVol ? na" in s and "no volume on this feed" in s
+    assert "Works on FX feeds with no volume (falls back to TWAP)" not in s
+    assert "timeframe.in_seconds() <= 3600" in s
