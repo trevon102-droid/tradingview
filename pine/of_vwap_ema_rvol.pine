@@ -1,0 +1,145 @@
+// OF · VWAPs + EMAs + RVOL
+// RTH VWAP (NY cash session) + weekly / monthly / quarterly anchored VWAPs with σ bands (clean breaks at
+// each reset), EMA stack, and RVOL candle highlighting. On feeds with no volume (spot FX, some CFDs) the VWAPs
+// become TWAPs (every bar weighted equally) and RVOL is not available; the readout says so instead of showing
+// a VWAP / RVOL that doesn't exist. RTH VWAP is only drawn on charts of 1h or lower.
+// RTH VWAP: resets on the first bar inside the session (default 09:30-16:00 America/New_York, DST-aware via
+// the IANA time zone), accumulates only during the session, and is frozen after the close. A bar counts as
+// RTH when it OPENS inside the session, so use a chart of 30m or lower for an exact 09:30 anchor
+// (on 1h CME bars the first RTH bar is 10:00).
+//@version=6
+indicator("OF · VWAPs + EMAs + RVOL", "OF VWAP", overlay = true)
+
+grpRth = "RTH VWAP (NY cash session)"
+showR   = input.bool(true, "RTH VWAP", group = grpRth, inline = "r")
+bandsR  = input.bool(false, "bands", group = grpRth, inline = "r")
+holdR   = input.bool(true, "Show frozen value after close", group = grpRth)
+rthSess = input.session("0930-1600", "Session", group = grpRth)
+rthTz   = input.string("America/New_York", "Time zone", group = grpRth)
+
+grpV = "Anchored VWAPs"
+showW  = input.bool(true, "Weekly", group = grpV, inline = "w")
+bandsW = input.bool(true, "bands", group = grpV, inline = "w")
+showM  = input.bool(true, "Monthly", group = grpV, inline = "m")
+bandsM = input.bool(false, "bands", group = grpV, inline = "m")
+showQ  = input.bool(false, "Quarterly", group = grpV, inline = "q")
+m1     = input.float(1.0, "Band 1 σ", step = 0.25, group = grpV)
+m2     = input.float(2.0, "Band 2 σ", step = 0.25, group = grpV)
+
+grpE = "EMAs"
+e1 = input.int(9, "EMA 1", group = grpE, inline = "e")
+e2 = input.int(21, "EMA 2", group = grpE, inline = "e")
+e3 = input.int(50, "EMA 3", group = grpE, inline = "e")
+e4 = input.int(200, "EMA 4", group = grpE, inline = "e")
+showE = input.bool(true, "Show EMAs", group = grpE)
+
+grpR = "RVOL"
+rvLen   = input.int(20, "Lookback", group = grpR)
+rvHi    = input.float(2.0, "Highlight ≥", step = 0.1, group = grpR)
+rvColor = input.bool(true, "Color high-RVOL candles", group = grpR)
+showTbl = input.bool(true, "Readout table", group = grpR)
+
+vol = na(volume) or volume == 0 ? 1.0 : volume
+noVol = ta.cum(nz(volume)) == 0          // no volume seen on this feed so far
+vw    = noVol ? "TWAP" : "VWAP"
+
+f_avwap(bool reset, float src, float v) =>
+    var float sPV  = 0.0
+    var float sPV2 = 0.0
+    var float sV   = 0.0
+    if reset
+        sPV  := 0.0
+        sPV2 := 0.0
+        sV   := 0.0
+    sPV  += src * v
+    sPV2 += src * src * v
+    sV   += v
+    float vw = sPV / sV
+    [vw, math.sqrt(math.max(sPV2 / sV - vw * vw, 0.0))]
+
+// RTH VWAP: reset at the first in-session bar, add only in session, hold the final value after the close
+rthTfOk  = timeframe.isintraday and timeframe.in_seconds() <= 3600   // a 4h bar can't hold a 09:30 anchor
+inRth    = rthTfOk and not na(time(timeframe.period, rthSess, rthTz))
+rthStart = inRth and not inRth[1]
+f_rthvwap(bool reset, bool add, float src, float v) =>
+    var float sPV  = 0.0
+    var float sPV2 = 0.0
+    var float sV   = 0.0
+    if reset
+        sPV  := 0.0
+        sPV2 := 0.0
+        sV   := 0.0
+    if add
+        sPV  += src * v
+        sPV2 += src * src * v
+        sV   += v
+    float vw = sV > 0 ? sPV / sV : na
+    [vw, sV > 0 ? math.sqrt(math.max(sPV2 / sV - vw * vw, 0.0)) : na]
+[rV, rS] = f_rthvwap(rthStart, inRth, hlc3, vol)
+
+rW = timeframe.change("W")
+rM = timeframe.change("M")
+rQ = timeframe.change("3M")
+[wV, wS] = f_avwap(rW, hlc3, vol)
+[mV, mS] = f_avwap(rM, hlc3, vol)
+[qV, qS] = f_avwap(rQ, hlc3, vol)
+
+// na on the reset bar + linebr style = clean break instead of a vertical join
+br(bool on, bool reset, float x) => on and not reset ? x : na
+
+cR = #22d3ee
+plot(showR and inRth ? rV : na, "RTH VWAP", cR, 2, plot.style_linebr)
+plot(showR and bandsR and inRth ? rV + m1 * rS : na, "RTH VWAP +1", color.new(cR, 50), 1, plot.style_linebr)
+plot(showR and bandsR and inRth ? rV - m1 * rS : na, "RTH VWAP -1", color.new(cR, 50), 1, plot.style_linebr)
+plot(showR and holdR and not inRth ? rV : na, "RTH VWAP (frozen after close)", color.new(cR, 55), 1, plot.style_circles)
+
+cW = #f5c542
+cM = #b388ff
+cQ = #f472b6
+plot(br(showW, rW, wV), "wVWAP", cW, 2, plot.style_linebr)
+plot(br(showW and bandsW, rW, wV + m1 * wS), "wVWAP +1", color.new(cW, 50), 1, plot.style_linebr)
+plot(br(showW and bandsW, rW, wV - m1 * wS), "wVWAP -1", color.new(cW, 50), 1, plot.style_linebr)
+plot(br(showW and bandsW, rW, wV + m2 * wS), "wVWAP +2", color.new(cW, 70), 1, plot.style_linebr)
+plot(br(showW and bandsW, rW, wV - m2 * wS), "wVWAP -2", color.new(cW, 70), 1, plot.style_linebr)
+plot(br(showM, rM, mV), "mVWAP", cM, 2, plot.style_linebr)
+plot(br(showM and bandsM, rM, mV + m1 * mS), "mVWAP +1", color.new(cM, 50), 1, plot.style_linebr)
+plot(br(showM and bandsM, rM, mV - m1 * mS), "mVWAP -1", color.new(cM, 50), 1, plot.style_linebr)
+plot(br(showQ, rQ, qV), "qVWAP", cQ, 2, plot.style_linebr)
+
+ema1 = ta.ema(close, e1)
+ema2 = ta.ema(close, e2)
+ema3 = ta.ema(close, e3)
+ema4 = ta.ema(close, e4)
+plot(showE ? ema1 : na, "EMA 1", #7dd3fc, 1)
+plot(showE ? ema2 : na, "EMA 2", #f59e0b, 1)
+plot(showE ? ema3 : na, "EMA 3", #a78bfa, 1)
+plot(showE ? ema4 : na, "EMA 4", #e5e7eb, 2)
+
+rvol = noVol ? na : volume / ta.sma(volume, rvLen)[1]
+hot  = not noVol and not na(rvol) and rvol >= rvHi
+barcolor(rvColor and hot ? (close >= open ? #00e5ff : #ff9100) : na, title = "High RVOL")
+
+stack = ema1 > ema2 and ema2 > ema3 ? "bull stack" : ema1 < ema2 and ema2 < ema3 ? "bear stack" : "mixed"
+sigmaW = wS > 0 ? (close - wV) / wS : 0.0
+
+var table t = table.new(position.bottom_right, 2, 6, bgcolor = color.new(#11151c, 10))
+if showTbl and barstate.islast
+    t.cell(0, 0, "RTH " + vw + (not rthTfOk ? " (needs ≤1h chart)" : inRth ? "" : " (closed)"), text_color = cR, text_size = size.small)
+    t.cell(1, 0, na(rV) or not rthTfOk ? "—" : str.tostring(rV, format.mintick), text_color = cR, text_size = size.small)
+    t.cell(0, 1, "Weekly " + vw, text_color = cW, text_size = size.small)
+    t.cell(1, 1, str.tostring(wV, format.mintick) + "  (" + (sigmaW >= 0 ? "+" : "") + str.tostring(sigmaW, "#.0") + "σ)", text_color = cW, text_size = size.small)
+    t.cell(0, 2, "Monthly " + vw, text_color = cM, text_size = size.small)
+    t.cell(1, 2, str.tostring(mV, format.mintick), text_color = cM, text_size = size.small)
+    t.cell(0, 3, "RVOL", text_color = color.gray, text_size = size.small)
+    t.cell(1, 3, noVol ? "n/a · no volume on this feed" : na(rvol) ? "—" : str.tostring(rvol, "#.00") + "x",
+         text_color = noVol ? color.orange : hot ? color.orange : color.silver, text_size = size.small)
+    t.cell(0, 4, "EMAs", text_color = color.gray, text_size = size.small)
+    t.cell(1, 4, stack, text_color = stack == "bull stack" ? #26a69a : stack == "bear stack" ? #ef5350 : color.silver, text_size = size.small)
+
+xR = ta.cross(close, rV)
+xW = ta.cross(close, wV)
+xM = ta.cross(close, mV)
+alertcondition(xR and inRth and barstate.isconfirmed, "RTH VWAP cross", "{{ticker}} closed across RTH VWAP")
+alertcondition(xW and barstate.isconfirmed, "Weekly VWAP cross", "{{ticker}} closed across weekly VWAP")
+alertcondition(xM and barstate.isconfirmed, "Monthly VWAP cross", "{{ticker}} closed across monthly VWAP")
+alertcondition(hot and barstate.isconfirmed, "High RVOL", "{{ticker}} RVOL above threshold (confirmed bar)")

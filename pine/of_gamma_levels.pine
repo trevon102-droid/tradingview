@@ -1,0 +1,122 @@
+// OF · Est. Dealer Gamma
+// ESTIMATED, not observed: computed from an ETF proxy's option chain (SPY→ES, QQQ→NQ, ...) assuming dealers
+// are long calls / short puts, then scaled to the futures price. It is context, not a forecast.
+// Paste the string from the dashboard Gamma card (Copy) or the scanner:
+//     zeroGamma;callWall;putWall;major1,major2,...;PROXY;calculatedUnixSeconds
+// Levels are only drawn / shaded / alerted from the time they were calculated, never painted back onto history.
+//@version=6
+indicator("OF · Est. Dealer Gamma", "OF Est γ", overlay = true, max_lines_count = 50, max_labels_count = 100)
+
+levelsIn  = input.string("", "Paste levels", tooltip = "zg;call;put;majors;proxy;calculated_unix (last two optional)")
+scale     = input.float(1.0, "Scale", step = 0.0001, tooltip = "Leave 1 for futures-mapped levels. Use e.g. 10 if you pasted raw SPY strikes onto ES.")
+basis     = input.float(0.0, "Offset", tooltip = "Fixed offset, e.g. for roll/basis drift since the levels were computed")
+staleMin  = input.int(120, "Stale after (minutes)", minval = 5)
+shade     = input.bool(true, "Shade regime (from calculation time on)")
+showMaj   = input.bool(true, "Show major strikes")
+grpW = "Wall events (confirmed bars only)"
+apprAtr   = input.float(0.3, "Approach = within x ATR", step = 0.05, group = grpW)
+acceptN   = input.int(3, "Acceptance = closes beyond wall", minval = 2, group = grpW)
+showMarks = input.bool(true, "Mark reject / break / acceptance", group = grpW)
+cZg   = input.color(#f5c542, "Zero gamma")
+cCall = input.color(#26a69a, "Call wall")
+cPut  = input.color(#ef5350, "Put wall")
+cMaj  = input.color(color.new(#9aa4b2, 40), "Major strikes")
+
+f_num(string s) =>
+    float x = str.tonumber(str.trim(s))
+    na(x) or x == 0 ? na : x * scale + basis
+
+parts  = str.split(levelsIn, ";")
+zg     = parts.size() > 0 ? f_num(parts.get(0)) : na
+cw     = parts.size() > 1 ? f_num(parts.get(1)) : na
+pw     = parts.size() > 2 ? f_num(parts.get(2)) : na
+proxy  = parts.size() > 4 ? str.trim(parts.get(4)) : "?"
+calcS  = parts.size() > 5 ? str.tonumber(str.trim(parts.get(5))) : na
+calcMs = na(calcS) ? na : calcS * 1000
+// without a calculation time we can't tell when the levels became known: treat as known from the last bar only
+live   = na(calcMs) ? barstate.islast : time >= calcMs
+
+// ───────── drawing ─────────
+var array<line>  lns  = array.new_line()
+var array<label> lbls = array.new_label()
+
+f_level(float px, color c, string txt, int w, string st) =>
+    if not na(px)
+        lns.push(line.new(bar_index - 1, px, bar_index, px, extend = extend.right, color = c, width = w, style = st))
+        lbls.push(label.new(bar_index + 3, px, txt + "  " + str.tostring(px, format.mintick), style = label.style_label_left,
+             color = color.new(c, 80), textcolor = c, size = size.small))
+
+if barstate.islast
+    for l in lns
+        l.delete()
+    lns.clear()
+    for l in lbls
+        l.delete()
+    lbls.clear()
+    if showMaj and parts.size() > 3
+        for s in str.split(parts.get(3), ",")
+            float px = f_num(s)
+            if not na(px) and px != cw and px != pw
+                lns.push(line.new(bar_index - 1, px, bar_index, px, extend = extend.right, color = cMaj, style = line.style_dotted))
+    f_level(zg, cZg, "Est. 0γ flip", 2, line.style_solid)
+    f_level(cw, cCall, "Est. call wall", 2, line.style_solid)
+    f_level(pw, cPut, "Est. put wall", 2, line.style_solid)
+
+posGamma = not na(zg) and close > zg
+bgcolor(shade and live and not na(zg) ? (posGamma ? color.new(#26a69a, 94) : color.new(#ef5350, 94)) : na, title = "Est. gamma regime")
+
+// ───────── freshness readout ─────────
+ageMin = na(calcMs) ? na : (timenow - calcMs) / 60000.0
+stale  = na(ageMin) or ageMin > staleMin
+var table t = table.new(position.top_right, 1, 3, bgcolor = color.new(#11151c, 10))
+if barstate.islast and not na(zg)
+    t.cell(0, 0, (posGamma ? "Positive" : "Negative") + " gamma regime (est.)", text_color = posGamma ? #26a69a : #ef5350, text_size = size.small)
+    t.cell(0, 1, "Proxy " + proxy + " · calc " + (na(calcMs) ? "unknown" : str.format_time(int(calcMs), "HH:mm", "America/New_York") + " ET"),
+         text_color = color.silver, text_size = size.small)
+    t.cell(0, 2, stale ? "STALE · " + (na(ageMin) ? "age unknown" : str.tostring(math.round(ageMin)) + " min old") : str.tostring(math.round(ageMin)) + " min old",
+         text_color = stale ? color.white : color.silver, bgcolor = stale ? color.new(#ef5350, 30) : na, text_size = size.small)
+
+// ───────── wall events: approach / touch / reject / break / acceptance ─────────
+atr14 = ta.atr(14)
+// stale levels never alert: judged per bar (age at that bar's close), so a bar that closed while the levels were
+// fresh keeps its marker, and nothing fires once they're older than the stale limit (or have no calc time)
+staleAtBar = na(calcMs) or (time_close - calcMs) / 60000.0 > staleMin
+ok    = live and barstate.isconfirmed and not staleAtBar
+
+// call wall (above price)
+cApproach = ok and not na(cw) and close < cw and cw - close <= apprAtr * atr14 and not (close[1] < cw and cw - close[1] <= apprAtr * atr14[1])
+cTouch    = ok and not na(cw) and high >= cw and high[1] < cw
+cReject   = ok and not na(cw) and high >= cw and close < cw
+cBreak    = ok and not na(cw) and close > cw and close[1] <= cw
+cAbove    = not na(cw) and close > cw
+cRun      = ta.barssince(not cAbove)
+cAccept   = ok and cAbove and cRun == acceptN
+
+// put wall (below price)
+pApproach = ok and not na(pw) and close > pw and close - pw <= apprAtr * atr14 and not (close[1] > pw and close[1] - pw <= apprAtr * atr14[1])
+pTouch    = ok and not na(pw) and low <= pw and low[1] > pw
+pReject   = ok and not na(pw) and low <= pw and close > pw
+pBreak    = ok and not na(pw) and close < pw and close[1] >= pw
+pBelow    = not na(pw) and close < pw
+pRun      = ta.barssince(not pBelow)
+pAccept   = ok and pBelow and pRun == acceptN
+
+zx        = ta.cross(close, zg)
+zCross    = ok and not na(zg) and zx
+
+plotshape(showMarks and cReject, "Call wall reject", shape.triangledown, location.abovebar, cCall, size = size.tiny)
+plotshape(showMarks and (cBreak or cAccept), "Call wall break / accept", shape.diamond, location.abovebar, cCall, size = size.tiny, text = "acc")
+plotshape(showMarks and pReject, "Put wall reject", shape.triangleup, location.belowbar, cPut, size = size.tiny)
+plotshape(showMarks and (pBreak or pAccept), "Put wall break / accept", shape.diamond, location.belowbar, cPut, size = size.tiny, text = "acc")
+
+alertcondition(zCross, "Est. zero gamma cross", "{{ticker}} closed across the estimated gamma flip")
+alertcondition(cApproach, "Call wall approach", "{{ticker}} approaching the est. call wall")
+alertcondition(cTouch, "Call wall touch", "{{ticker}} touched the est. call wall")
+alertcondition(cReject, "Call wall reject", "{{ticker}} touched the est. call wall and closed back below")
+alertcondition(cBreak, "Call wall break", "{{ticker}} closed above the est. call wall")
+alertcondition(cAccept, "Call wall acceptance", "{{ticker}} held above the est. call wall for N closes")
+alertcondition(pApproach, "Put wall approach", "{{ticker}} approaching the est. put wall")
+alertcondition(pTouch, "Put wall touch", "{{ticker}} touched the est. put wall")
+alertcondition(pReject, "Put wall reject", "{{ticker}} touched the est. put wall and closed back above")
+alertcondition(pBreak, "Put wall break", "{{ticker}} closed below the est. put wall")
+alertcondition(pAccept, "Put wall acceptance", "{{ticker}} held below the est. put wall for N closes")

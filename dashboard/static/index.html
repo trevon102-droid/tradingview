@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orderflow Desk</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">OF<span>desk</span></div>
+    <nav class="nav"><a class="on" href="/">Chart</a><a href="/footprint">Footprint</a></nav>
+    <div class="sym"><b id="symKey">ES</b><span id="symName"></span><span id="symLast" class="last"></span></div>
+    <div class="seg" id="tfSeg">
+      <button data-tf="1h" class="on">1H</button><button data-tf="4h">4H</button><button data-tf="1d">1D</button>
+    </div>
+    <select id="days" title="Lookback">
+      <option value="20">20d</option><option value="60" selected>60d</option><option value="120">120d</option>
+      <option value="250">250d</option><option value="500">500d</option>
+    </select>
+    <div class="toggles" id="toggles">
+      <label><input type="checkbox" data-k="ema" checked>EMAs</label>
+      <label><input type="checkbox" data-k="vwap" checked>VWAP</label>
+      <label><input type="checkbox" data-k="profile" checked>Profile</label>
+      <label><input type="checkbox" data-k="sessions" checked>Sessions</label>
+      <label><input type="checkbox" data-k="levels" checked>Levels</label>
+      <label><input type="checkbox" data-k="npoc" checked>nPOCs</label>
+      <label><input type="checkbox" data-k="gamma" checked>Gamma</label>
+    </div>
+    <button id="refresh" class="ghost" title="Reload (R)">⟳</button>
+  </header>
+
+  <main class="grid">
+    <aside class="watch">
+      <div class="h">Watchlist</div>
+      <ul id="watch"><li class="muted">loading…</li></ul>
+    </aside>
+
+    <section class="charts">
+      <div id="main" class="chart"><canvas id="overlay"></canvas><div id="legend" class="legend"></div></div>
+      <div class="pane-h">Est. delta · CVD</div>
+      <div id="flow" class="chart flow"></div>
+      <div id="err" class="err" hidden></div>
+    </section>
+
+    <aside class="side">
+      <div class="card" id="auction">
+        <div class="h">Auction read</div>
+        <div class="chips" id="chips"></div>
+        <dl class="kv" id="kv"></dl>
+        <ul class="notes" id="notes"></ul>
+      </div>
+      <div class="card">
+        <div class="h" title="Estimated, not observed: assumes dealers are long calls / short puts from customer flow, and uses the ETF's options (e.g. SPY for ES) scaled to the futures price.">Est. dealer gamma <span class="muted" id="gProxy"></span></div>
+        <div id="gamma" class="muted">—</div>
+      </div>
+      <div class="card">
+        <div class="h">Levels <span class="muted">dist in ATR</span></div>
+        <table class="levels" id="levels"></table>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

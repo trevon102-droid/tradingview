@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+scanner/.state.json
+data/*.csv
+data/market/
+data/research/events/outcomes.csv.gz

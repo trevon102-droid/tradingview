@@ -1,0 +1,250 @@
+// OF · Auction Profile (estimated volume profile)
+// Composite profile (right edge), prior-session POC + value area, naked POCs that extend until revisited,
+// possible poor highs/lows, developing POC/VA, and RTH initial balance.
+// ESTIMATED profile, not true volume-at-price: each chart bar's volume is spread evenly across every price
+// row its range touched. Real volume-at-price needs tick data. POC/VA are approximations of the real ones.
+// "Possible poor high/low" is a heuristic (the edge rows still carry heavy estimated volume). It is not the
+// TPO-based market-profile definition, so treat it as a prompt to look, not a confirmed poor extreme.
+//@version=6
+indicator("OF · Auction Profile", "OF Profile", overlay = true, max_boxes_count = 500, max_lines_count = 500,
+     max_labels_count = 200, max_bars_back = 5000)
+
+// ───────── inputs ─────────
+grpC = "Composite profile"
+showComp   = input.bool(true, "Show composite profile", group = grpC)
+compBars   = input.int(500, "Lookback (bars)", minval = 50, maxval = 4900, group = grpC)
+compRows   = input.int(90, "Rows", minval = 20, maxval = 200, group = grpC)
+compWidth  = input.int(60, "Width (bars)", minval = 10, maxval = 200, group = grpC)
+vaPct      = input.float(70, "Value area %", minval = 50, maxval = 95, group = grpC) / 100
+
+grpS = "Session value areas"
+showSess   = input.bool(true, "Prior session POC + VA", group = grpS)
+sessIn     = input.string("Auto", "Session", options = ["Auto", "CME 18:00-17:00 ET", "D", "W", "M"], group = grpS,
+     tooltip = "Auto = CME session (18:00-17:00 ET) on intraday futures, chart-day on other intraday, weekly on daily+")
+sessRows   = input.int(40, "Rows per session", minval = 10, maxval = 120, group = grpS)
+keepSess   = input.int(15, "Sessions to keep", minval = 1, maxval = 60, group = grpS)
+maxSessBar = input.int(3000, "Max bars per session profile", minval = 200, maxval = 10000, group = grpS,
+     tooltip = "Guard against Pine loop / time limits (e.g. weekly sessions on a 1m chart). Longer sessions are skipped and flagged.")
+showNaked  = input.bool(true, "Extend naked POCs until revisited", group = grpS)
+maxNaked   = input.int(10, "Max naked POCs", minval = 1, maxval = 40, group = grpS)
+showPoor   = input.bool(true, "Flag possible poor highs / lows (heuristic)", group = grpS)
+showDev    = input.bool(true, "Developing session POC / VA", group = grpS)
+
+grpI = "Initial balance (intraday)"
+showIB     = input.bool(true, "Show RTH initial balance", group = grpI)
+ibSess     = input.session("0930-1030", "IB window (exchange tz)", group = grpI)
+ibTz       = input.string("America/New_York", "IB timezone", group = grpI)
+
+grpK = "Colors"
+cPoc   = input.color(#f5c542, "POC", group = grpK)
+cVa    = input.color(color.new(#5b8cff, 55), "Value area rows", group = grpK)
+cOut   = input.color(color.new(#6b7686, 75), "Outside VA rows", group = grpK)
+cSess  = input.color(color.new(#5b8cff, 92), "Session VA fill", group = grpK)
+cNaked = input.color(#e879f9, "Naked POC", group = grpK)
+cIB    = input.color(color.new(#9aa4b2, 0), "IB", group = grpK)
+
+isFut  = syminfo.type == "futures"
+useCme = timeframe.isintraday and (sessIn == "CME 18:00-17:00 ET" or (sessIn == "Auto" and isFut))
+sessTf = sessIn == "Auto" or sessIn == "CME 18:00-17:00 ET" ? (timeframe.isintraday ? "D" : "W") : sessIn
+// CME trading day D runs 18:00 ET (D-1) -> 17:00 ET (D). Shifting by +6 h puts 18:00 ET on midnight, so the NY
+// calendar date of (time + 6h) is the trading day. Computed in America/New_York, so it's DST-safe and doesn't
+// depend on the chart's exchange time zone. (DST switches happen at 02:00 Sunday, while CME is closed.)
+cmeT   = time + 6 * 3600 * 1000
+cmeDay = year(cmeT, "America/New_York") * 10000 + month(cmeT, "America/New_York") * 100 + dayofmonth(cmeT, "America/New_York")
+vol    = na(volume) or volume == 0 ? 1.0 : volume   // spot FX: no volume -> time-weighted (TPO-ish)
+
+// ───────── profile engine ─────────
+// Returns [bins, bottom, step, pocIdx, vaLoIdx, vaHiIdx]
+f_profile(array<float> hs, array<float> ls, array<float> vs, int nRows, float va) =>
+    float top  = hs.max()
+    float bot  = ls.min()
+    float step = math.max((top - bot) / nRows, syminfo.mintick)
+    array<float> bins = array.new_float(nRows, 0.0)
+    for i = 0 to hs.size() - 1
+        int a = math.min(nRows - 1, math.max(0, int(math.floor((ls.get(i) - bot) / step))))
+        int b = math.min(nRows - 1, math.max(0, int(math.floor((hs.get(i) - bot) / step))))
+        float share = vs.get(i) / (b - a + 1)
+        for j = a to b
+            bins.set(j, bins.get(j) + share)
+    int poc   = bins.indexof(bins.max())
+    float tot = bins.sum()
+    float acc = bins.get(poc)
+    int lo = poc
+    int hi = poc
+    while acc < tot * va and (lo > 0 or hi < nRows - 1)
+        float up = hi < nRows - 1 ? bins.get(hi + 1) : -1.0
+        float dn = lo > 0 ? bins.get(lo - 1) : -1.0
+        if up >= dn
+            hi += 1
+            acc += up
+        else
+            lo -= 1
+            acc += dn
+    [bins, bot, step, poc, lo, hi]
+
+// ───────── session accumulation ─────────
+var array<float> sH = array.new_float()
+var array<float> sL = array.new_float()
+var array<float> sV = array.new_float()
+var int sStart = time
+
+var array<box>   vaBoxes   = array.new_box()
+var array<line>  pocLines  = array.new_line()
+var array<line>  nakedLn   = array.new_line()
+var array<float> nakedPx   = array.new_float()
+var array<label> poorLbls  = array.new_label()
+
+newSess = useCme ? cmeDay != cmeDay[1] : timeframe.change(sessTf)
+var int skipped = 0
+
+if newSess and sH.size() > maxSessBar
+    skipped += 1
+if newSess and sH.size() >= 3 and sH.size() <= maxSessBar
+    [bins, bot, step, poc, lo, hi] = f_profile(sH, sL, sV, sessRows, vaPct)
+    float pocPx = bot + (poc + 0.5) * step
+    float vah   = bot + (hi + 1) * step
+    float val   = bot + lo * step
+    if showSess
+        vaBoxes.push(box.new(sStart, vah, time[1], val, xloc = xloc.bar_time, bgcolor = cSess, border_color = na))
+        pocLines.push(line.new(sStart, pocPx, time[1], pocPx, xloc = xloc.bar_time, color = color.new(cPoc, 20), width = 2))
+        if vaBoxes.size() > keepSess
+            vaBoxes.shift().delete()
+            pocLines.shift().delete()
+    if showNaked
+        nakedLn.push(line.new(time[1], pocPx, time, pocPx, xloc = xloc.bar_time, extend = extend.right,
+             color = cNaked, style = line.style_dashed))
+        nakedPx.push(pocPx)
+        if nakedLn.size() > maxNaked
+            nakedLn.shift().delete()
+            nakedPx.shift()
+    if showPoor
+        int edge  = math.max(1, int(sessRows / 25))
+        float pv  = bins.get(poc)
+        float topV = 0.0
+        float botV = 0.0
+        for k = 0 to edge - 1
+            topV += bins.get(sessRows - 1 - k) / edge
+            botV += bins.get(k) / edge
+        if topV > 0.35 * pv
+            poorLbls.push(label.new(time[1], sH.max(), "possible poor high", xloc = xloc.bar_time, style = label.style_label_down,
+                 color = color.new(color.orange, 70), textcolor = color.orange, size = size.tiny))
+        if botV > 0.35 * pv
+            poorLbls.push(label.new(time[1], sL.min(), "possible poor low", xloc = xloc.bar_time, style = label.style_label_up,
+                 color = color.new(color.orange, 70), textcolor = color.orange, size = size.tiny))
+        while poorLbls.size() > keepSess * 2
+            poorLbls.shift().delete()
+
+if newSess
+    sH.clear()
+    sL.clear()
+    sV.clear()
+    sStart := time
+
+if sH.size() <= maxSessBar      // one past the cap is enough to know the session gets skipped; bounds memory
+    sH.push(high)
+    sL.push(low)
+    sV.push(vol)
+
+// naked POCs die once price trades back through them
+if showNaked and nakedPx.size() > 0
+    for i = nakedPx.size() - 1 to 0
+        float px = nakedPx.get(i)
+        line ln  = nakedLn.get(i)
+        int x2 = na(ln) ? na : ln.get_x2()
+        if low <= px and high >= px and (na(x2) or time > x2)
+            if not na(ln)
+                ln.set_extend(extend.none)
+                ln.set_x2(time)
+                ln.set_color(color.new(cNaked, 70))
+            nakedPx.remove(i)
+            nakedLn.remove(i)
+
+// ───────── initial balance (RTH first hour) ─────────
+inIB = not na(time(timeframe.period, ibSess, ibTz))
+var float ibH = na
+var float ibL = na
+var int ibT = na
+var line ibHl = na
+var line ibLl = na
+if showIB and timeframe.isintraday and timeframe.multiplier <= 60
+    if inIB and not inIB[1]
+        ibH := high
+        ibL := low
+        ibT := time
+    else if inIB
+        ibH := math.max(ibH, high)
+        ibL := math.min(ibL, low)
+    if not inIB and inIB[1] and not na(ibH)
+        ibHl := line.new(ibT, ibH, time, ibH, xloc = xloc.bar_time, color = cIB, style = line.style_dotted, extend = extend.right)
+        ibLl := line.new(ibT, ibL, time, ibL, xloc = xloc.bar_time, color = cIB, style = line.style_dotted, extend = extend.right)
+        line.new(ibT, ibH, time, ibH, xloc = xloc.bar_time, color = cIB, width = 2)
+        line.new(ibT, ibL, time, ibL, xloc = xloc.bar_time, color = cIB, width = 2)
+    if newSess
+        if not na(ibHl)
+            ibHl.set_extend(extend.none)
+            ibHl.set_x2(time)
+        if not na(ibLl)
+            ibLl.set_extend(extend.none)
+            ibLl.set_x2(time)
+
+// ───────── composite + developing (drawn once, on the last bar) ─────────
+var array<box>  compBoxes = array.new_box()
+var label compLbl = na
+var array<line> lastLines = array.new_line()
+
+if barstate.islast
+    if not na(compLbl)
+        compLbl.delete()
+    for b in compBoxes
+        b.delete()
+    compBoxes.clear()
+    for l in lastLines
+        l.delete()
+    lastLines.clear()
+
+    if showComp
+        int n = math.min(compBars, bar_index + 1)
+        array<float> hs = array.new_float()
+        array<float> ls = array.new_float()
+        array<float> vs = array.new_float()
+        for i = 0 to n - 1
+            hs.push(high[i])
+            ls.push(low[i])
+            vs.push(na(volume[i]) or volume[i] == 0 ? 1.0 : volume[i])
+        [bins, bot, step, poc, lo, hi] = f_profile(hs, ls, vs, compRows, vaPct)
+        float mx = bins.max()
+        int x0 = bar_index + 3
+        for r = 0 to compRows - 1
+            float v = bins.get(r)
+            if v > 0
+                int w = math.max(1, int(math.round(v / mx * compWidth)))
+                color c = r == poc ? cPoc : (r >= lo and r <= hi ? cVa : cOut)
+                compBoxes.push(box.new(x0, bot + (r + 1) * step, x0 + w, bot + r * step, bgcolor = c, border_color = na))
+        float pocPx = bot + (poc + 0.5) * step
+        lastLines.push(line.new(bar_index - n + 1, pocPx, x0 + compWidth, pocPx, color = cPoc, width = 1, style = line.style_dotted))
+        compLbl := label.new(x0, bot + compRows * step, "Est. volume profile · " + str.tostring(n) + " bars",
+             style = label.style_label_lower_left, color = color.new(#11151c, 20), textcolor = color.silver, size = size.tiny)
+        lastLines.push(line.new(bar_index - n + 1, bot + (hi + 1) * step, x0 + compWidth, bot + (hi + 1) * step, color = color.new(#5b8cff, 30), style = line.style_dotted))
+        lastLines.push(line.new(bar_index - n + 1, bot + lo * step, x0 + compWidth, bot + lo * step, color = color.new(#5b8cff, 30), style = line.style_dotted))
+
+    if showDev and sH.size() >= 2 and sH.size() <= maxSessBar
+        [dBins, dBot, dStep, dPoc, dLo, dHi] = f_profile(sH, sL, sV, sessRows, vaPct)
+        float dp = dBot + (dPoc + 0.5) * dStep
+        lastLines.push(line.new(sStart, dp, time, dp, xloc = xloc.bar_time, color = cPoc, width = 2))
+        lastLines.push(line.new(sStart, dBot + (dHi + 1) * dStep, time, dBot + (dHi + 1) * dStep, xloc = xloc.bar_time, color = color.new(#5b8cff, 20)))
+        lastLines.push(line.new(sStart, dBot + dLo * dStep, time, dBot + dLo * dStep, xloc = xloc.bar_time, color = color.new(#5b8cff, 20)))
+
+var table gt = table.new(position.bottom_left, 1, 1, bgcolor = color.new(#11151c, 10))
+if barstate.islast
+    string sessName = useCme ? "CME 18:00-17:00 ET" : sessTf
+    gt.cell(0, 0, "Sessions: " + sessName + (skipped > 0 ? " · " + str.tostring(skipped) + " skipped (> " + str.tostring(maxSessBar) + " bars)" : ""),
+         text_color = skipped > 0 ? color.orange : color.gray, text_size = size.tiny)
+
+// ───────── alerts ─────────
+atr14 = ta.atr(14)
+nakedHit = false
+if showNaked and nakedPx.size() > 0
+    for px in nakedPx
+        if math.abs(close - px) <= atr14 * 0.25
+            nakedHit := true
+alertcondition(nakedHit, "Near naked POC", "{{ticker}} trading within 0.25 ATR of a naked POC")
